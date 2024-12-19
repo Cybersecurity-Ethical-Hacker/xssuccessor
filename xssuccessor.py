@@ -32,7 +32,7 @@ from tqdm.asyncio import tqdm_asyncio
 
 init(autoreset=True)
 
-MAX_CONCURRENT_WORKERS = 40
+MAX_CONCURRENT_WORKERS = 50
 DEFAULT_TIMEOUT = 5
 DEFAULT_ALERT_TIMEOUT = 2
 DEFAULT_WORKERS = 8
