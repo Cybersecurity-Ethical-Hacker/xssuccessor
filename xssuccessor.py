@@ -1420,7 +1420,7 @@ async def async_main() -> None:
                 print(f"{Fore.YELLOW}Check skipped{Style.RESET_ALL}")
                 return
             else:
-                print(f"{Fore.GREEN}Already running the latest version ({VERSION}){Style.RESET_ALL}")
+                print(f"{Fore.GREEN}Already running the latest version.{Style.RESET_ALL}")
                 return
         config = Config(args, playwright_version)
         setup_logging(config)
