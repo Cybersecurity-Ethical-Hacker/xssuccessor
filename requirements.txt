@@ -1,0 +1,5 @@
+aiofiles>=23.2.1
+aiohttp>=3.9.1
+colorama>=0.4.6
+tqdm>=4.66.1
+packaging>=23.2
