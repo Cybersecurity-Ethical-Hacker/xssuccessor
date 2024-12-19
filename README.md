@@ -9,8 +9,7 @@
 ⚡ XSSuccessor is a powerful, asynchronous **Cross-Site Scripting (XSS)** detection tool. It automates the injection of payloads into URLs, detects value reflections, monitors for triggered browser alerts, and effectively identifies XSS vulnerabilities. It simulates real browser requests with custom advanced payloads, effectively bypassing WAFs and protections, ensuring accurate detection results.
 
 ## 📸 Screenshot:
-![xsssuccessor](https://github.com/user-attachments/assets/627d26d2-e3b5-4ac9-9a48-0853c4e8cfce)
-
+![xssuccesor](https://github.com/user-attachments/assets/5718d139-5990-4c59-84c0-46ccde91c54b)
 
 ## 🌟 Features
 
