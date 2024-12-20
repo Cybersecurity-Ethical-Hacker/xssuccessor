@@ -1,7 +1,7 @@
 # XSSuccessor ⚡
 
 [![Python Version](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/downloads/)
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![GitHub Issues](https://img.shields.io/github/issues/Cybersecurity-Ethical-Hacker/xssuccessor.svg)](https://github.com/Cybersecurity-Ethical-Hacker/xssuccessor/issues)
 [![GitHub Stars](https://img.shields.io/github/stars/Cybersecurity-Ethical-Hacker/xssuccessor.svg)](https://github.com/Cybersecurity-Ethical-Hacker/xssuccessor/stargazers)
 [![Contributions Welcome](https://img.shields.io/badge/Contributions-Welcome-brightgreen.svg)](CONTRIBUTING.md)
