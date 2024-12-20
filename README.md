@@ -213,10 +213,10 @@ If you encounter problems while using **XSSuccessor**, consider the following co
 - **Customization:** Tailor the payloads and worker settings based on your system's capabilities and the specific requirements of your testing environment.
 
 ## 📂 Directory Structure
-- `xssuccessor.py`: Main executable script: Fast | Full payloads detections | 100% Valid Results
+- `xssuccessor.py`: Main executable script.
+- `xss_payloads.txt`: A small, default set of basic payloads for quick testing scenarios.
+- `xss_payloads_full.txt`: A comprehensive list of payloads designed for more in-depth or extensive testing.
 - `requirements.txt`: Contains a list of dependencies required to run the script.
-- `xss_payloads.txt`: Default payload file containing grouped payloads and indicators.
-- `xss_payloads_full.txt`: Payload file containing grouped payloads and indicators.
 - `scans/`: Contains output files and scan results.
 - `logs/`: Contains detailed log files.
 
