@@ -63,6 +63,16 @@ pip install playwright
    playwright install
    ```
 
+   ```bash
+   sudo playwright install-deps
+   ```
+
+if it fails run:
+
+   ```bash
+   sudo apt-get install libevent-2.1-7 libavif16
+   ```      
+
 **Clone the repository:**
 
    ```bash
@@ -102,6 +112,16 @@ pip install playwright
    ```bash
    playwright install
    ```
+
+   ```bash
+   sudo playwright install-deps
+   ```
+
+if it fails run:
+
+   ```bash
+   sudo apt-get install libevent-2.1-7 libavif16
+   ``` 
 
 **Clone the repository:**
 
