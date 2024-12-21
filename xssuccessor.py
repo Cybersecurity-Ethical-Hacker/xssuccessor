@@ -173,6 +173,40 @@ def check_playwright_version() -> str:
             sys.exit(1)
     return playwright_version
 
+class DOMXSSScanner:
+    def __init__(self):
+        self.dom_patterns = {
+            'sources': re.compile(r'(?:document\.URL|location\.(?:href|search|hash)|document\.(?:referrer|cookie)|localStorage)',
+                                re.IGNORECASE),
+            'sinks': re.compile(r'(?:eval|innerHTML|outerHTML|document\.write|setTimeout|setInterval)',
+                              re.IGNORECASE)
+        }
+
+    async def quick_dom_check(self, response_text: str) -> bool:
+        """Quick initial check for DOM-based XSS potential without browser"""
+        # Check for innerHTML assignments to specific elements
+        if re.search(r'getElementById\([\'"]greeting[\'"]\)\.innerHTML', response_text, re.I):
+            return True
+
+        script_tags = re.findall(r'<script[^>]*>(.*?)</script>', response_text, re.DOTALL)
+        for script in script_tags:
+            # Check for URL parameter access
+            has_param_access = re.search(r'URLSearchParams|params\.get|location\.search', script, re.I)
+            # Check for DOM modification
+            has_dom_mod = re.search(r'innerHTML\s*=|document\.write', script, re.I)
+            
+            if has_param_access and has_dom_mod:
+                return True
+            
+            # Check for vulnerable patterns
+            if re.search(r'getElementById\([^)]+\)\.innerHTML\s*=', script, re.I):
+                return True
+
+            if 'window.onload' in script and 'innerHTML' in script:
+                return True
+
+        return False
+
 class TimeoutFilter(logging.Filter):
     TIMEOUT_PATTERNS = [
         "Timeout",
@@ -825,6 +859,20 @@ class Config:
                 self.output_file = self.base_dir / f"xss_results_{timestamp}.txt"
 
 class XSSScanner:
+    def _extract_payload_from_url(self, url: str) -> Optional[str]:
+        """Extract the payload from a URL by comparing with original parameters"""
+        try:
+            parsed = urlparse(url)
+            params = parse_qs(parsed.query, keep_blank_values=True)
+            # Look for the payload in parameter values
+            for param_values in params.values():
+                for value in param_values:
+                    if any(payload in value for payload in self.payloads):
+                        return value
+            return None
+        except Exception:
+            return None
+
     SVG_PATTERNS = [
         re.compile(r'<\s*svg[^>]*>(.*?)</\s*svg\s*>', re.I | re.S),
         re.compile(r'<\s*svg[^>]*onload\s*=', re.I),
@@ -852,6 +900,7 @@ class XSSScanner:
             'failed_payloads': 0,
             'errors': 0
         }
+        self.dom_scanner = DOMXSSScanner()
         self.error_types: Dict[str, int] = {}
         self.start_time: Optional[float] = None
         self.output_lock: asyncio.Lock = asyncio.Lock()
@@ -1026,35 +1075,126 @@ class XSSScanner:
         ])
         return variations
 
-    async def validate_alert(self, page: Page, url: str) -> Tuple[bool, Optional[str]]:
+    async def validate_alert(self, page: Page, url: str, potential_dom: bool = False) -> Tuple[bool, Optional[str], str]:
+        """Validate both reflected and DOM XSS with a single browser instance"""
         alert_triggered = False
         alert_text = None
-        async def handle_dialog(dialog: Any) -> None:
+        xss_type = 'unknown'
+        dom_detected = False
+        is_reflected = False
+        payload = self._extract_payload_from_url(url)
+
+        async def handle_dialog(dialog):
             nonlocal alert_triggered, alert_text
-            try:
-                alert_text = dialog.message
-                await dialog.accept()
-                alert_triggered = True
-            except Exception as e:
-                async with self.stats_lock:
-                    self.stats['errors'] += 1
-                    self.error_types[type(e).__name__] = self.error_types.get(type(e).__name__, 0) + 1
-                log_error(f"Error handling dialog: {str(e)}")
+            alert_text = dialog.message
+            await dialog.accept()
+            alert_triggered = True
+
         try:
             page.on("dialog", handle_dialog)
-            await page.goto(url, timeout=self.config.timeout * 1000)
-            await page.wait_for_timeout(self.config.alert_timeout * 1000)
+            
+            # First get and analyze the raw response without browser rendering
+            async with self.http_session.get(url) as response:
+                content = await response.text()
+                
+                # Check for reflection in raw response
+                if payload:
+                    is_reflected = payload in content or payload in html.unescape(content)
+                    for encoded_var in self._get_encoded_variations(payload):
+                        if encoded_var in content:
+                            is_reflected = True
+                            break
+                
+                # Look for DOM XSS patterns in source
+                dom_patterns = [
+                    (r'document\.getElementById.*\.innerHTML', ''),
+                    (r'location\.(?:search|hash|href).*(?:innerHTML|eval|document\.write)', ''),
+                    (r'URLSearchParams.*innerHTML', ''),
+                    (r'window\.onload.*innerHTML', ''),
+                    (r'document\.write\s*\(.*\)', ''),
+                    (r'eval\s*\(.*\)', ''),
+                    (r'setTimeout\s*\(.*\)', ''),
+                    (r'setInterval\s*\(.*\)', ''),
+                    (r'new\s+Function\s*\(.*\)', '')
+                ]
+                
+                for pattern, _ in dom_patterns:
+                    if re.search(pattern, content, re.IGNORECASE | re.DOTALL):
+                        dom_detected = True
+                        break  # Found one pattern, no need to check others
+
+                # If found DOM patterns, add monitoring
+                if dom_detected:
+                    await page.add_init_script("""
+                        window.addEventListener('DOMContentLoaded', () => {
+                            // Monitor DOM modifications
+                            const observer = new MutationObserver((mutations) => {
+                                mutations.forEach((mutation) => {
+                                    if (mutation.type === 'childList' || mutation.type === 'characterData') {
+                                        window._domModified = true;
+                                    }
+                                });
+                            });
+                            observer.observe(document.body, {
+                                childList: true,
+                                characterData: true,
+                                subtree: true
+                            });
+                            
+                            // Monitor script execution
+                            const originalSetTimeout = window.setTimeout;
+                            window.setTimeout = function() {
+                                window._scriptExecuted = true;
+                                return originalSetTimeout.apply(this, arguments);
+                            };
+                            
+                            const originalEval = window.eval;
+                            window.eval = function() {
+                                window._scriptExecuted = true;
+                                return originalEval.apply(this, arguments);
+                            };
+                        });
+                    """)
+
+                # Navigate and wait for load
+                await page.goto(url, timeout=self.config.timeout * 1000)
+                await page.wait_for_load_state('domcontentloaded')
+                
+                # Wait for potential JavaScript execution
+                await page.wait_for_timeout(self.config.alert_timeout * 1000)
+                
+                # Check for DOM modifications silently
+                if dom_detected:
+                    dom_modified = await page.evaluate("() => window._domModified === true")
+                    script_executed = await page.evaluate("() => window._scriptExecuted === true")
+                    if dom_modified or script_executed:
+                        dom_detected = True
+
+                # Determine XSS type based on our findings
+                if alert_triggered:
+                    if is_reflected and dom_detected:
+                        xss_type = 'both'
+                    elif is_reflected:
+                        xss_type = 'reflected'
+                    elif dom_detected:
+                        xss_type = 'dom'
+                    else:
+                        # If got an alert but couldn't determine type, default to reflected
+                        xss_type = 'reflected'
+
+                return alert_triggered, alert_text, xss_type
+
         except Exception as e:
             async with self.stats_lock:
                 self.stats['errors'] += 1
                 self.error_types[type(e).__name__] = self.error_types.get(type(e).__name__, 0) + 1
             log_error(f"Error validating alert for {url}: {str(e)}")
+            return False, None, 'reflected'
         finally:
             page.remove_listener("dialog", handle_dialog)
-        return alert_triggered, alert_text
 
     async def record_vulnerability(self, domain: str, param: str, payload: str,
-                                   url: str, alert_text: str) -> None:
+                                   url: str, alert_text: str, xss_type: str = 'reflected') -> None:
         async with self.output_lock:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             result = {
@@ -1063,13 +1203,16 @@ class XSSScanner:
                 "parameter": param,
                 "payload": payload,
                 "url": url,
-                "alert_text": alert_text
+                "alert_text": alert_text,
+                "type": xss_type
             }
+            
             if self.config.json_output:
                 self.json_results.append(result)
             else:
                 self.results.extend([
                     "XSS Found: ",
+                    f"Type: {xss_type.capitalize()} XSS",
                     f"Domain: {domain}",
                     f"Parameter: {param}",
                     f"Payload: {payload}",
@@ -1082,56 +1225,98 @@ class XSSScanner:
         domain = urlparse(url).netloc
         parsed = urlparse(url)
         params = parse_qs(parsed.query, keep_blank_values=True)
-        original_value = params.get(param, [''])[0]
+        
         try:
             remaining_updates = len(self.payloads)
             for payload in self.payloads:
                 if not self.running:
                     break
+                    
                 new_params = params.copy()
                 new_params[param] = [payload]
                 new_query = urlencode(new_params, doseq=True)
                 test_url = urlunparse(parsed._replace(query=new_query))
+                
                 async with self.stats_lock:
                     self.stats['payloads_tested'] += 1
+                
                 try:
-                    reflection_found = await self.check_reflection(test_url, payload)
-                    if reflection_found:
+                    # Get initial response
+                    async with self.http_session.get(test_url) as response:
+                        if response.status != 200:
+                            continue
+                            
+                        response_text = await response.text()
+                        is_reflected = payload in response_text
+                        potential_dom = await self.dom_scanner.quick_dom_check(response_text)
+
+                        # Skip Playwright check if no reflection and no DOM potential
+                        if not is_reflected and not potential_dom:
+                            async with self.stats_lock:
+                                self.stats['failed_payloads'] += 1
+                            continue
+
+                        # Single Playwright check that handles both types
                         context, page = await self.acquire_context()
                         try:
-                            alert_triggered, alert_text = await self.validate_alert(page, test_url)
+                            alert_triggered, alert_text, xss_type = await self.validate_alert(
+                                page, 
+                                test_url, 
+                                potential_dom=potential_dom
+                            )
+
                             if alert_triggered:
                                 async with self.stats_lock:
                                     self.stats['successful_payloads'] += 1
+                                
                                 payload_number = self.payload_index_map.get(payload, 0)
+                                type_label = "DOM Based" if xss_type == "dom" else "Reflected"
+
+                                # Format fields with fixed widths for alignment
+                                domain_field = f"{domain:<25}"  # Pad domain to 25 chars
+                                param_field = f"{param:<10}"    # Pad parameter to 10 chars
+                                type_field = f"{type_label:<12}" # Pad type to 12 chars
+                                
                                 message = (
                                     f"{Fore.GREEN}🎯 XSS Found!{Style.RESET_ALL}  "
-                                    f"Domain: {Fore.YELLOW}{domain}{Style.RESET_ALL}  |  "
-                                    f"Parameter: {Fore.YELLOW}{param}{Style.RESET_ALL}  |  "
+                                    f"Domain: {Fore.YELLOW}{domain_field}{Style.RESET_ALL}  |  "
+                                    f"Parameter: {Fore.YELLOW}{param_field}{Style.RESET_ALL}  |  "
+                                    f"Type: {Fore.YELLOW}{type_field}{Style.RESET_ALL}  |  "
                                     f"Payload: {Fore.YELLOW}#{payload_number}{Style.RESET_ALL}"
                                 )
+                                
                                 if progress_bar:
                                     progress_bar.write(message)
-                                await self.record_vulnerability(domain, param, payload, test_url, alert_text)
+                                    
+                                await self.record_vulnerability(
+                                    domain=domain,
+                                    param=param,
+                                    payload=payload,
+                                    url=test_url,
+                                    alert_text=alert_text,
+                                    xss_type=type_label
+                                )
+                                
                                 if progress_bar:
                                     progress_bar.update(remaining_updates)
                                 break
                             else:
                                 async with self.stats_lock:
                                     self.stats['failed_payloads'] += 1
+                                    
                         finally:
                             await self.release_context(context, page)
-                    else:
-                        async with self.stats_lock:
-                            self.stats['failed_payloads'] += 1
+
                 except Exception as e:
                     async with self.stats_lock:
                         self.stats['errors'] += 1
                         self.error_types[type(e).__name__] = self.error_types.get(type(e).__name__, 0) + 1
                     log_error(f"Error processing {test_url} with payload {payload}: {str(e)}")
+                    
                 if progress_bar:
                     progress_bar.update(1)
                 remaining_updates -= 1
+                
         except Exception as e:
             log_error(f"Error in parameter payload processing: {str(e)}")
 
@@ -1351,7 +1536,7 @@ class XSSScanner:
                     self.urls = valid_urls
                     
             elif self.config.domain:
-                # Single domain validation was already done in parse_arguments
+                # Single domain validation already done in parse_arguments
                 self.urls = [self.config.domain]
                 
             async with aiofiles.open(self.config.payload_file, 'r') as f:
