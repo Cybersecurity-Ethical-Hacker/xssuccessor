@@ -127,7 +127,7 @@ if it fails run:
 
    ```bash
    git clone https://github.com/Cybersecurity-Ethical-Hacker/xssuccessor.git
-   cd xssdynagen
+   cd xssuccessor
    ```
 
 **Ensure you have Python 3.8+ installed. Install the required dependencies using pip:**
@@ -142,7 +142,7 @@ Whenever you:
 - Open a New Terminal Window
 - Restart Your Computer
   
-You must activate the virtual environment before running XSSDynagen to ensure that all dependencies are correctly loaded.
+You must activate the virtual environment before running XSSuccessor to ensure that all dependencies are correctly loaded.
 
 
 ## 🧩 **URLs with Parameters**
