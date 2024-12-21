@@ -512,6 +512,44 @@ class CustomArgumentParser(argparse.ArgumentParser):
             print(f"{Fore.YELLOW}Use -h or --help to see available options{Style.RESET_ALL}")
         sys.exit(2)
 
+def validate_url(url: str) -> bool:
+    """
+    Validate URL for parameter presence in both normal queries and after fragments.
+    Now accepts both empty parameters and parameters with values.
+    """
+    try:
+        # First decode any URL encoding
+        decoded_url = urllib.parse.unquote(url)
+        
+        # Check for basic URL structure
+        if not decoded_url.startswith(('http://', 'https://')):
+            return False
+            
+        # Look for parameters either in normal query or after fragment
+        if '?' not in decoded_url:
+            return False
+            
+        # Check if there's at least one parameter with a name
+        query_part = ""
+        if '#' in decoded_url and '?' in decoded_url.split('#')[1]:
+            # Parameters are after the fragment
+            query_part = decoded_url.split('#')[1].split('?')[1]
+        else:
+            # Normal query parameters
+            query_part = decoded_url.split('?')[1]
+            
+        # Check for any valid parameter (with or without value)
+        params = query_part.split('&')
+        for param in params:
+            if param and '=' in param:
+                param_name = param.split('=')[0]
+                if param_name:  # Only check if parameter has a name
+                    return True
+        return False
+        
+    except Exception:
+        return False
+
 def parse_arguments() -> argparse.Namespace:
     parser = CustomArgumentParser(
         formatter_class=lambda prog: CustomHelpFormatter(prog, max_help_position=80)
@@ -541,8 +579,10 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument('-b', '--batch-size', type=int, default=DEFAULT_BATCH_SIZE,
                        help=f'Define the number of requests per batch')
     args = parser.parse_args()
+    
     if not args.update and not (args.domain or args.url_list):
         parser.error("One of the arguments -d/--domain -l/--url-list is required")
+    
     if not args.update:
         if args.workers < 1 or args.workers > MAX_CONCURRENT_WORKERS:
             parser.error(f"Workers must be between 1 and {MAX_CONCURRENT_WORKERS}")
@@ -553,11 +593,11 @@ def parse_arguments() -> argparse.Namespace:
         if args.batch_size < 1 or args.batch_size > 1000:
             parser.error("Batch size must be between 1 and 1000")
         if args.domain:
-            parsed_domain = urlparse(args.domain)
-            if not parsed_domain.scheme or not parsed_domain.netloc:
-                parser.error("\n\nPlease provide a full URL with scheme (e.g., https://example.com)")
-            if not parsed_domain.query:
-                parser.error("\n\nPlease provide a URL with at least one query parameter (e.g., https://example.com/page?param1=value&param2=test)")
+            if not validate_url(args.domain):
+                parser.error("\n\nPlease provide a valid URL with parameters. Examples:\n" +
+                           "- http://testhtml5.vulnweb.com/#/redir?url=\n" +
+                           "- http://testhtml5.vulnweb.com/%23/redir?url=value\n" +
+                           "- https://example.com/page?param1=value")
     return args
 
 class GitHandler:
@@ -816,8 +856,6 @@ class XSSScanner:
         self.start_time: Optional[float] = None
         self.output_lock: asyncio.Lock = asyncio.Lock()
         self.stats_lock: asyncio.Lock = asyncio.Lock()
-        self.print_lock: asyncio.Lock = asyncio.Lock()
-        self.progress_lock: asyncio.Lock = asyncio.Lock()
         self.tested_parameters: set = set()
         self.tested_parameters_lock = asyncio.Lock()
         self.results: List[str] = []
@@ -825,8 +863,6 @@ class XSSScanner:
         self.total_tests: int = 0
         self.urls: List[str] = []
         self.payloads: List[str] = []
-        self.reflection_cache: Dict[Tuple[str, str], bool] = {}
-        self.domain_cache: Dict[str, str] = {}
         self.interrupted: bool = False
         self.running: bool = True
         self.progress_bar: Optional[tqdm_asyncio] = None
@@ -1288,86 +1324,34 @@ class XSSScanner:
                 async with aiofiles.open(self.config.url_list, 'r') as f:
                     all_urls = [line.strip() for line in await f.readlines() if line.strip()]
                     valid_urls = []
-                    seen_structures = {}
+                    seen_urls = set()
                     
-                    def normalize_url_structure(url: str) -> str:
-                        """
-                        Normalize URL to its structural form by removing parameter values
-                        but keeping parameter names and their positions.
-                        """
-                        try:
-                            parsed = urlparse(url)
-                            if not (parsed.scheme and parsed.netloc):
-                                return ""
-                                
-                            # Check if there's at least one parameter with an equals sign
-                            if not any('=' in param for param in parsed.query.split('&') if param):
-                                return ""
-                            
-                            # Parse query parameters and sort them
-                            params = parse_qs(parsed.query, keep_blank_values=True)
-                            # Create a normalized version with empty values
-                            normalized_params = {k: '' for k in params.keys() if '=' in f"{k}={params[k][0]}"}
-                            # Skip if no valid parameters found
-                            if not normalized_params:
-                                return ""
-                            
-                            # Reconstruct query string maintaining parameter order
-                            normalized_query = urlencode(normalized_params, doseq=True)
-                            
-                            # Reconstruct URL with normalized query
-                            normalized_url = urlunparse((
-                                parsed.scheme,
-                                parsed.netloc,
-                                parsed.path,
-                                parsed.params,
-                                normalized_query,
-                                ''
-                            ))
-                            return normalized_url
-                        except Exception:
-                            return ""
-
-                    # Process URLs and apply deduplication
                     for url in all_urls:
-                        try:
-                            normalized = normalize_url_structure(url)
-                            if not normalized:
-                                continue
-                                
-                            # If we haven't seen this structure before, add it
-                            if normalized not in seen_structures:
-                                seen_structures[normalized] = url
-                                valid_urls.append(url)
-                            # If we have seen it, only replace if the current URL has empty parameters
-                            elif '=' in url and not any(v for v in parse_qs(urlparse(url).query).values()):
-                                # Replace the existing URL with the empty parameter version
-                                valid_urls[valid_urls.index(seen_structures[normalized])] = url
-                                seen_structures[normalized] = url
-                                
-                        except Exception:
+                        # First check if it's a valid URL with parameters
+                        if not validate_url(url):
                             continue
                             
-                    self.urls = valid_urls
+                        # Deduplicate URLs
+                        if url not in seen_urls:
+                            seen_urls.add(url)
+                            valid_urls.append(url)
+                        
                     if not valid_urls:
                         print(f"\n{Fore.RED}❌ Error: No valid URLs found in the input file.{Style.RESET_ALL}")
-                        print(f"{Fore.YELLOW}🧩 URLs must start with http:// or https:// and include at least one parameter with an equals sign (=).{Style.RESET_ALL}")
-                        print(f"{Fore.CYAN}🔗 Example of a valid URL: https://example.com/page?param1=value&param2=test{Style.RESET_ALL}")
+                        print(f"{Fore.YELLOW}🧩 URLs must include parameters. Examples:{Style.RESET_ALL}")
+                        print(f"{Fore.CYAN}- http://testhtml5.vulnweb.com/#/redir?url={Style.RESET_ALL}")
+                        print(f"{Fore.CYAN}- http://testhtml5.vulnweb.com/%23/redir?url=value{Style.RESET_ALL}")
                         sys.exit(2)
                     
-                    # Print deduplication results (removed \n from the beginning)
+                    # Print deduplication results
                     print(f"{Fore.CYAN}📝 URL Deduplication Results:{Style.RESET_ALL}")
                     print(f"{Fore.GREEN}✓ Original URLs: {len(all_urls)}{Style.RESET_ALL}")
                     print(f"{Fore.GREEN}✓ After deduplication: {len(valid_urls)}{Style.RESET_ALL}")
                     
+                    self.urls = valid_urls
+                    
             elif self.config.domain:
-                parsed_domain = urlparse(self.config.domain)
-                # Check if there's at least one parameter with an equals sign
-                if not any('=' in param for param in parsed_domain.query.split('&') if param):
-                    print(f"\n{Fore.RED}❌ Error: Invalid URL format.{Style.RESET_ALL}")
-                    print(f"{Fore.YELLOW}🧩 URL must include at least one parameter with an equals sign (=).{Style.RESET_ALL}")
-                    print(f"{Fore.CYAN}🔗 Example of a valid URL: https://example.com/page?param1=value&param2=test{Style.RESET_ALL}")
-                    sys.exit(2)
+                # Single domain validation was already done in parse_arguments
                 self.urls = [self.config.domain]
                 
             async with aiofiles.open(self.config.payload_file, 'r') as f:
@@ -1377,16 +1361,33 @@ class XSSScanner:
             self.stats['total_urls'] = len(self.urls)
             total_parameters = 0
             for url in self.urls:
-                parsed = urlparse(url)
-                # Only count parameters that have an equals sign
-                params = {k: v for k, v in parse_qs(parsed.query, keep_blank_values=True).items() 
-                         if '=' in f"{k}={v[0]}"}
+                decoded_url = urllib.parse.unquote(url)
+                # Get query part from either normal query or after fragment
+                query_part = ""
+                if '#' in decoded_url and '?' in decoded_url.split('#')[1]:
+                    # Parameters are after the fragment
+                    fragment_parts = decoded_url.split('#')[1]
+                    query_part = fragment_parts.split('?')[1]
+                elif '?' in decoded_url:
+                    # Normal query parameters
+                    query_part = decoded_url.split('?')[1]
+                
+                # Count parameters that have an equals sign
+                params = []
+                for param in query_part.split('&'):
+                    if param and '=' in param:
+                        param_name = param.split('=')[0]
+                        if param_name:  # Ensure parameter name exists
+                            params.append(param_name)
+                
                 total_parameters += len(params)
+            
             self.stats['parameters_tested'] = total_parameters
             self.total_tests = total_parameters * len(self.payloads)
             
             print(f"{Fore.CYAN}🔗 Loaded {len(self.urls)} URLs and {len(self.payloads)} payloads{Style.RESET_ALL}")
             print(f"{Fore.YELLOW}🔍 Starting the scan...{Style.RESET_ALL}\n")
+            
         except FileNotFoundError as e:
             print(f"{Fore.RED}📂 Error: Could not find file: {e.filename}{Style.RESET_ALL}")
             sys.exit(1)
