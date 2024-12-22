@@ -6,7 +6,7 @@
 [![GitHub Stars](https://img.shields.io/github/stars/Cybersecurity-Ethical-Hacker/xssuccessor.svg)](https://github.com/Cybersecurity-Ethical-Hacker/xssuccessor/stargazers)
 [![Contributions Welcome](https://img.shields.io/badge/Contributions-Welcome-brightgreen.svg)](CONTRIBUTING.md)
 
-⚡ XSSuccessor is a powerful, asynchronous **Cross-Site Scripting (XSS)** detection tool. It automates the injection of payloads into URLs, detects value reflections, monitors for triggered browser alerts, and effectively identifies XSS vulnerabilities. It simulates real browser requests with custom advanced payloads, effectively bypassing WAFs and protections, ensuring accurate detection results.
+⚡ XSSuccessor is a powerful, asynchronous **Cross-Site Scripting (XSS)** `Reflected`,`DOM Based`detection tool. It automates the injection of payloads into URLs, detects value reflections, monitors for triggered browser alerts, and effectively identifies XSS vulnerabilities. It simulates real browser requests with custom advanced payloads, effectively bypassing WAFs and protections, ensuring accurate detection results.
 
 ## 📸 Screenshot:
 ![successor](https://github.com/user-attachments/assets/fd369030-7fff-4708-81dd-c848096d9538)
@@ -145,14 +145,14 @@ Whenever you:
 You must activate the virtual environment before running XSSuccessor to ensure that all dependencies are correctly loaded.
 
 
-## 🧩 **URLs with Parameters**
+## 🧩 **URLs with Parameters - Kali Linux**
 
 The tool requires URLs with parameters (e.g., `?id=1` or `?search=example&page=2`) to work effectively.
 
-If you don't have a URL with parameters or a list of such URLs, you can generate one using the following method (replace the `domain.com`):
+If you don't have a URL with parameters or a list of such URLs, you can generate one using the following method (replace the `domain.com`). Processing may take significant time.:
 
 ```bash
-paramspider -d domain.com -s 2>&1 | grep -Ei "https?://" | sort -u | httpx -silent -status-code -mc 200,201,204,401,403 > live_urls.txt
+paramspider -d domain.com -s 2>&1 | grep -Ei "https?://" | sort -u | httpx-toolkit -silent no-status-code -mc 200,201,204,401,403 > live_urls.txt
 ```
 
 Alternatively, you can use tools like `waybackurls`, `urlfinder`, `katana`, and others to collect URLs efficiently.
