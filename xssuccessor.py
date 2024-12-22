@@ -33,8 +33,8 @@ from tqdm.asyncio import tqdm_asyncio
 init(autoreset=True)
 
 MAX_CONCURRENT_WORKERS = 40
-DEFAULT_TIMEOUT = 4
-DEFAULT_ALERT_TIMEOUT = 2
+DEFAULT_TIMEOUT = 8
+DEFAULT_ALERT_TIMEOUT = 5
 DEFAULT_WORKERS = 8
 DEFAULT_BATCH_SIZE = 5
 CONNECTIONS_PER_WORKER = 2
@@ -1279,10 +1279,10 @@ class XSSScanner:
                                 payload_number = self.payload_index_map.get(payload, 0)
                                 type_label = "DOM Based" if xss_type == "dom" else "Reflected"
 
-                                # Format fields with fixed widths for alignment
+                                # Format results fields with fixed widths for alignment
                                 domain_field = f"{domain:<25}"  # Pad domain to 25 chars
                                 param_field = f"{param:<10}"    # Pad parameter to 10 chars
-                                type_field = f"{type_label:<12}" # Pad type to 12 chars
+                                type_field = f"{type_label:<10}" # Pad type to 12 chars
                                 
                                 message = (
                                     f"{Fore.GREEN}🎯 XSS Found!{Style.RESET_ALL}  "
