@@ -32,12 +32,14 @@ from tqdm.asyncio import tqdm_asyncio
 
 init(autoreset=True)
 
-MAX_CONCURRENT_WORKERS = 50
-DEFAULT_TIMEOUT = 5
+MAX_CONCURRENT_WORKERS = 40
+DEFAULT_TIMEOUT = 4
 DEFAULT_ALERT_TIMEOUT = 2
 DEFAULT_WORKERS = 8
-DEFAULT_BATCH_SIZE = 100
+DEFAULT_BATCH_SIZE = 5
 CONNECTIONS_PER_WORKER = 2
+MAX_WORKERS_PER_BATCH = 5
+ERROR_LOG_FILE = "logs/errors.log"
 
 VERSION = "0.0.1"
 GITHUB_REPOSITORY: str = "Cybersecurity-Ethical-Hacker/xssuccessor"
@@ -611,7 +613,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument('-H', '--header', action='append',
                        help='Custom headers can be specified multiple times. Format: "Header: Value"')
     parser.add_argument('-b', '--batch-size', type=int, default=DEFAULT_BATCH_SIZE,
-                       help=f'Define the number of requests per batch')
+                       help=f'Define the number of requests per batch (default: {DEFAULT_BATCH_SIZE})')
     args = parser.parse_args()
     
     if not args.update and not (args.domain or args.url_list):
@@ -772,7 +774,7 @@ class Config:
         self.timeout: int = args.timeout
         self.alert_timeout: int = args.alert_timeout
         self.max_workers: int = args.workers
-        self.batch_size: int = args.batch_size
+        self.batch_size: int = min(args.batch_size, DEFAULT_BATCH_SIZE)
         self.playwright_version: str = playwright_version
         git_handler = GitHandler()
         repo_status, repo_message = git_handler.check_repo_status()
@@ -892,6 +894,7 @@ class XSSScanner:
 
     def __init__(self, config: Config) -> None:
         self.config: Config = config
+        self.ERROR_LOG_FILE = "logs/errors.log"
         self.stats: Dict[str, int] = {
             'total_urls': 0,
             'parameters_tested': 0,
@@ -1227,7 +1230,6 @@ class XSSScanner:
         params = parse_qs(parsed.query, keep_blank_values=True)
         
         try:
-            remaining_updates = len(self.payloads)
             for payload in self.payloads:
                 if not self.running:
                     break
@@ -1244,6 +1246,9 @@ class XSSScanner:
                     # Get initial response
                     async with self.http_session.get(test_url) as response:
                         if response.status != 200:
+                            # Update progress even for failed requests
+                            if progress_bar:
+                                progress_bar.update(1)
                             continue
                             
                         response_text = await response.text()
@@ -1254,6 +1259,8 @@ class XSSScanner:
                         if not is_reflected and not potential_dom:
                             async with self.stats_lock:
                                 self.stats['failed_payloads'] += 1
+                            if progress_bar:
+                                progress_bar.update(1)
                             continue
 
                         # Single Playwright check that handles both types
@@ -1287,7 +1294,7 @@ class XSSScanner:
                                 
                                 if progress_bar:
                                     progress_bar.write(message)
-                                    
+                                
                                 await self.record_vulnerability(
                                     domain=domain,
                                     param=param,
@@ -1297,12 +1304,17 @@ class XSSScanner:
                                     xss_type=type_label
                                 )
                                 
+                                # Update progress and skip remaining payloads for this parameter
+                                remaining_payloads = len(self.payloads) - (self.payloads.index(payload) + 1)
                                 if progress_bar:
-                                    progress_bar.update(remaining_updates)
+                                    # Update for current test and remaining payloads that will be skipped
+                                    progress_bar.update(1 + remaining_payloads)
                                 break
                             else:
                                 async with self.stats_lock:
                                     self.stats['failed_payloads'] += 1
+                                if progress_bar:
+                                    progress_bar.update(1)
                                     
                         finally:
                             await self.release_context(context, page)
@@ -1311,32 +1323,67 @@ class XSSScanner:
                     async with self.stats_lock:
                         self.stats['errors'] += 1
                         self.error_types[type(e).__name__] = self.error_types.get(type(e).__name__, 0) + 1
-                    log_error(f"Error processing {test_url} with payload {payload}: {str(e)}")
-                    
-                if progress_bar:
-                    progress_bar.update(1)
-                remaining_updates -= 1
+                    # Update progress even when errors occur
+                    if progress_bar:
+                        progress_bar.update(1)
+                    # Write error to log file instead of printing
+                    with open(self.ERROR_LOG_FILE, 'a', encoding='utf-8') as f:
+                        f.write(f"Error processing {test_url}: {str(e)}\n")
                 
         except Exception as e:
             log_error(f"Error in parameter payload processing: {str(e)}")
+            # Update progress for any remaining tests in case of errors
+            if progress_bar:
+                remaining = len(self.payloads)
+                progress_bar.update(remaining)
 
     async def process_batch(self, batch_urls: List[str], progress_bar: tqdm_asyncio) -> None:
-        semaphore = asyncio.Semaphore(self.config.max_workers)
-        tasks = []
-        async def process_with_semaphore(url: str, param: str) -> None:
-            async with semaphore:
-                await self.process_parameter_payloads(url, param, progress_bar)
-        for url in batch_urls:
-            if not self.running:
-                break
-            parsed = urlparse(url)
-            params = parse_qs(parsed.query, keep_blank_values=True)
-            for param in params:
-                if not await self.should_test_parameter(url, param):
+        try:
+            # Use a smaller number of concurrent workers for better control
+            semaphore = asyncio.Semaphore(MAX_WORKERS_PER_BATCH)
+            tasks = []
+            
+            async def process_with_semaphore(url: str, param: str) -> None:
+                try:
+                    async with semaphore:
+                        await self.process_parameter_payloads(url, param, progress_bar)
+                        # Small delay after each parameter test
+                        await asyncio.sleep(0.1)
+                except Exception as e:
+                    log_error(f"Error processing URL {url} with parameter {param}: {str(e)}")
+                    if progress_bar:
+                        progress_bar.update(1)
+            
+            # Process URLs in sequential batches
+            for url in batch_urls:
+                if not self.running:
+                    break
+                
+                try:
+                    parsed = urlparse(url)
+                    params = parse_qs(parsed.query, keep_blank_values=True)
+                    
+                    # Only create tasks for valid parameters
+                    for param in params:
+                        if await self.should_test_parameter(url, param):
+                            task = asyncio.create_task(process_with_semaphore(url, param))
+                            tasks.append(task)
+                    
+                    # Process tasks in smaller chunks for better control
+                    while tasks:
+                        # Take up to 5 tasks at a time
+                        current_tasks, tasks = tasks[:MAX_WORKERS_PER_BATCH], tasks[MAX_WORKERS_PER_BATCH:]
+                        if current_tasks:
+                            await asyncio.gather(*current_tasks, return_exceptions=True)
+                        # Add a small delay between chunks
+                        await asyncio.sleep(0.2)
+                    
+                except Exception as e:
+                    log_error(f"Error processing batch URL {url}: {str(e)}")
                     continue
-                task = asyncio.create_task(process_with_semaphore(url, param))
-                tasks.append(task)
-        await asyncio.gather(*tasks, return_exceptions=True)
+
+        except Exception as e:
+            log_error(f"Error in process_batch: {str(e)}")
 
     def banner(self) -> None:
         banner_width = 91
@@ -1387,36 +1434,63 @@ class XSSScanner:
         self.banner()
         await self.load_files()
         self.start_time = time.time()
+        
         try:
             await self.initialize_http_session()
             await self.initialize_browser()
+            
+            # Warm up only a few initial connections
             async def warm_up_connection(url: str) -> None:
                 try:
                     async with self.http_session.head(url, timeout=2):
                         pass
-                except Exception as e:
+                except Exception:
                     pass
-            first_batch = self.urls[:min(10, len(self.urls))]
+            
+            # Warm up with just first 3 URLs instead of 10
+            first_batch = self.urls[:min(3, len(self.urls))]
             await asyncio.gather(*[warm_up_connection(url) for url in first_batch])
+            
+            # Initialize progress bar with more descriptive format
             self.progress_bar = tqdm_asyncio(
                 total=self.total_tests,
-                desc="Progress",
+                desc="Processing URLs",
                 bar_format="{desc}: {percentage:3.0f}%|{bar}| [{n_fmt}/{total_fmt} Tests] [Time:{elapsed} - Est:{remaining}] [{rate_fmt}]",
                 colour="cyan",
                 dynamic_ncols=True,
                 unit="test"
             )
-            batch_size = self.config.batch_size
-            for i in range(0, len(self.urls), batch_size):
+            
+            # Process URLs in smaller batches with better progress tracking
+            small_batch_size = 5  # Process 5 URLs at a time
+            total_urls = len(self.urls)
+            
+            for i in range(0, total_urls, small_batch_size):
                 if not self.running:
                     break
-                batch_urls = self.urls[i:i+batch_size]
-                await self.process_batch(batch_urls, self.progress_bar)
+                
+                # Get current batch of URLs
+                batch_urls = self.urls[i:i + small_batch_size]
+                current_batch_end = min(i + small_batch_size, total_urls)
+                
+                # Update progress description to show current batch
+                self.progress_bar.set_description(
+                    f"Processing URLs {i+1}-{current_batch_end} of {total_urls}"
+                )
+                
+                # Process the current batch
+                try:
+                    await self.process_batch(batch_urls, self.progress_bar)
+                except Exception as e:
+                    log_error(f"Error processing batch {i+1}-{current_batch_end}: {str(e)}")
+                    continue
+                
+                # Add delay between batches
+                await asyncio.sleep(0.5)
+            
             await asyncio.sleep(0)
-        except asyncio.CancelledError:
-            self.interrupted = True
-            self.running = False
-            raise
+        except Exception as e:
+            log_error(f"Error in run method: {str(e)}")
         finally:
             await self.cleanup()
 
