@@ -168,6 +168,7 @@ Usage: xssuccessor.py [options]
 
 options:
   -h, --help           Show this help message and exit
+  -u, --update         Check for updates and automatically install the latest version
   -d, --domain         Specify the domain with parameter(s) to scan (required unless -l is used)
   -l, --url-list       Provide a file containing a list of URLs with parameters to scan
   -p, --payloads       Custom file containing payloads
@@ -178,7 +179,7 @@ options:
   -j, --json           Output results in JSON format
   -H, --header         Custom headers can be specified multiple times. Format: "Header: Value"
   -b, --batch-size     Define the number of requests per batch
-  -u, --update         Check for updates and automatically install the latest version
+  -r, --rate-limit     Maximum number of requests per second (default: 15)
 ```
 
 ## 💡 Examples
@@ -188,7 +189,7 @@ python xssuccessor.py -d "https://domain.com/file.php?parameter=1234"
 ```
 💻 Scan multiple URLs with parameter(s) from a file with a custom rate limit:
 ```bash
-python xssuccessor.py -l urls.txt -r 5
+python xssuccessor.py -l urls.txt -r 15
 ```
 💻 Scan with custom payloads and increased timeout:
 ```bash

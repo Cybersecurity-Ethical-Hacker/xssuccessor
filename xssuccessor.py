@@ -33,12 +33,15 @@ from tqdm.asyncio import tqdm_asyncio
 init(autoreset=True)
 
 MAX_CONCURRENT_WORKERS = 40
+DEFAULT_WORKERS = 10
+DEFAULT_BATCH_SIZE = 10
+MAX_WORKERS_PER_BATCH = 10
+DEFAULT_RATE_LIMIT = 10
 DEFAULT_TIMEOUT = 8
-DEFAULT_ALERT_TIMEOUT = 5
-DEFAULT_WORKERS = 8
-DEFAULT_BATCH_SIZE = 5
+DEFAULT_ALERT_TIMEOUT = 6
 CONNECTIONS_PER_WORKER = 2
-MAX_WORKERS_PER_BATCH = 5
+MIN_RATE_LIMIT = 1
+MAX_RATE_LIMIT = 100
 ERROR_LOG_FILE = "logs/errors.log"
 
 VERSION = "0.0.1"
@@ -614,6 +617,8 @@ def parse_arguments() -> argparse.Namespace:
                        help='Custom headers can be specified multiple times. Format: "Header: Value"')
     parser.add_argument('-b', '--batch-size', type=int, default=DEFAULT_BATCH_SIZE,
                        help=f'Define the number of requests per batch (default: {DEFAULT_BATCH_SIZE})')
+    parser.add_argument('-r', '--rate-limit', type=int, default=DEFAULT_RATE_LIMIT,
+                       help=f'Maximum number of requests per second (default: {DEFAULT_RATE_LIMIT})')
     args = parser.parse_args()
     
     if not args.update and not (args.domain or args.url_list):
@@ -628,6 +633,8 @@ def parse_arguments() -> argparse.Namespace:
             parser.error("Alert timeout must be between 1 and 30 seconds")
         if args.batch_size < 1 or args.batch_size > 1000:
             parser.error("Batch size must be between 1 and 1000")
+        if args.rate_limit < MIN_RATE_LIMIT or args.rate_limit > MAX_RATE_LIMIT:
+            parser.error(f"Rate limit must be between {MIN_RATE_LIMIT} and {MAX_RATE_LIMIT} requests per second")
         if args.domain:
             if not validate_url(args.domain):
                 parser.error("\n\nPlease provide a valid URL with parameters. Examples:\n" +
@@ -775,14 +782,15 @@ class Config:
         self.alert_timeout: int = args.alert_timeout
         self.max_workers: int = args.workers
         self.batch_size: int = min(args.batch_size, DEFAULT_BATCH_SIZE)
+        self.rate_limit: int = args.rate_limit  # Add rate limit config
         self.playwright_version: str = playwright_version
+        
+        # Git handling
         git_handler = GitHandler()
         repo_status, repo_message = git_handler.check_repo_status()
         self.version_info: VersionInfo = self._check_version()
-        self.playwright_version: str = playwright_version
-        git_handler = GitHandler()
-        repo_status, repo_message = git_handler.check_repo_status()
-        self.version_info: VersionInfo = self._check_version()
+        
+        # Header handling
         self.custom_headers_present = False
         custom_headers = {}
         if args.header:
@@ -795,6 +803,8 @@ class Config:
                     print(f"{Fore.RED}Invalid header format: {header}. Headers must be in 'HeaderName: HeaderValue' format.{Style.RESET_ALL}")
                     sys.exit(1)
         self.headers = HeaderManager.get_headers(custom_headers)
+        
+        # Setup
         self._setup_directories(args)
         self._setup_files(args)
 
@@ -917,6 +927,7 @@ class XSSScanner:
         self.payloads: List[str] = []
         self.interrupted: bool = False
         self.running: bool = True
+        self.rate_limiter = RateLimiter(config.rate_limit)
         self.progress_bar: Optional[tqdm_asyncio] = None
         self.browser: Optional[Browser] = None
         self.context_pool: asyncio.Queue = asyncio.Queue()
@@ -1234,6 +1245,9 @@ class XSSScanner:
                 if not self.running:
                     break
                     
+                # Apply rate limiting
+                await self.rate_limiter.acquire()
+                
                 new_params = params.copy()
                 new_params[param] = [payload]
                 new_query = urlencode(new_params, doseq=True)
@@ -1371,7 +1385,7 @@ class XSSScanner:
                     
                     # Process tasks in smaller chunks for better control
                     while tasks:
-                        # Take up to 5 tasks at a time
+                        # Take up to x tasks at a time
                         current_tasks, tasks = tasks[:MAX_WORKERS_PER_BATCH], tasks[MAX_WORKERS_PER_BATCH:]
                         if current_tasks:
                             await asyncio.gather(*current_tasks, return_exceptions=True)
@@ -1403,6 +1417,7 @@ class XSSScanner:
 - Version: {Fore.GREEN}{self.config.current_version}{Style.RESET_ALL}
 - Update Available: {Fore.GREEN}{self.config.version_info.update_available}{Style.RESET_ALL}
 - Max Workers: {Fore.GREEN}{self.config.max_workers}{Style.RESET_ALL}
+- Rate Limit: {Fore.GREEN}{self.config.rate_limit} req/s{Style.RESET_ALL}
 - Batch Size: {Fore.GREEN}{self.config.batch_size}{Style.RESET_ALL}
 - Page Timeout: {Fore.GREEN}{self.config.timeout}s{Style.RESET_ALL}
 - Alert Timeout: {Fore.GREEN}{self.config.alert_timeout}s{Style.RESET_ALL}
@@ -1454,8 +1469,13 @@ class XSSScanner:
             # Initialize progress bar with more descriptive format
             self.progress_bar = tqdm_asyncio(
                 total=self.total_tests,
-                desc="Processing URLs",
-                bar_format="{desc}: {percentage:3.0f}%|{bar}| [{n_fmt}/{total_fmt} Tests] [Time:{elapsed} - Est:{remaining}] [{rate_fmt}]",
+                desc="Progress",
+                bar_format=(
+                    "Progress: {percentage:3.0f}%|{bar}| "
+                    f"[URLs: {{n_fmt}}/{len(self.urls)}] "
+                    "[{n_fmt}/{total_fmt} Tests] "
+                    "[Time:{elapsed} - Est:{remaining}]"
+                ),
                 colour="cyan",
                 dynamic_ncols=True,
                 unit="test"
@@ -1474,8 +1494,11 @@ class XSSScanner:
                 current_batch_end = min(i + small_batch_size, total_urls)
                 
                 # Update progress description to show current batch
-                self.progress_bar.set_description(
-                    f"Processing URLs {i+1}-{current_batch_end} of {total_urls}"
+                self.progress_bar.bar_format = (
+                    "Progress: {percentage:3.0f}%|{bar}| "
+                    f"[URLs: {i+1}-{current_batch_end}/{len(self.urls)}] "
+                    "[{n_fmt}/{total_fmt} Tests] "
+                    "[Time:{elapsed} - Est:{remaining}]"
                 )
                 
                 # Process the current batch
@@ -1496,45 +1519,71 @@ class XSSScanner:
 
     async def cleanup(self) -> None:
         try:
+            # Close progress bar first
             if self.progress_bar:
-                remaining = self.progress_bar.total - self.progress_bar.n
-                if remaining > 0:
-                    self.progress_bar.update(remaining)
-                self.progress_bar.refresh()
-                self.progress_bar.close()
+                try:
+                    remaining = self.progress_bar.total - self.progress_bar.n
+                    if remaining > 0:
+                        self.progress_bar.update(remaining)
+                    self.progress_bar.refresh()
+                    self.progress_bar.close()
+                except Exception:
+                    pass
                 self.progress_bar = None
+
+            # Reset rate limiter if exists
+            if hasattr(self, 'rate_limiter'):
+                self.rate_limiter.reset()
+
+            # Save results if we found vulnerabilities
             if self.stats['successful_payloads'] > 0:
                 await self.save_results()
-            while not self.context_pool.empty():
-                try:
-                    context, page = await self.context_pool.get_nowait()
-                    await page.close()
-                    await context.close()
-                except:
-                    pass
-            if self.browser:
+
+            # Clean up browser contexts
+            if hasattr(self, 'context_pool') and self.context_pool is not None:
+                while not self.context_pool.empty():
+                    try:
+                        context, page = await self.context_pool.get_nowait()
+                        if page:
+                            await page.close()
+                        if context:
+                            await context.close()
+                    except Exception:
+                        pass
+
+            # Close browser with timeout
+            if hasattr(self, 'browser') and self.browser:
                 try:
                     await asyncio.wait_for(self.browser.close(), timeout=2.0)
-                except:
+                except Exception:
                     pass
-                finally:
-                    self.browser = None
-            if self.http_session and not self.http_session.closed:
+
+            # Close HTTP session with timeout
+            if hasattr(self, 'http_session') and self.http_session and not self.http_session.closed:
                 try:
                     await asyncio.wait_for(self.http_session.close(), timeout=1.0)
-                    await asyncio.sleep(0.1)
-                except Exception as e:
+                    await asyncio.sleep(0.1)  # Small delay to ensure proper closure
+                except Exception:
                     pass
-                finally:
-                    self.http_session = None
+
+            # Print final stats if not interrupted
             if not self.interrupted:
                 self.print_final_stats()
+
         except Exception as e:
-            pass
+            # Log any cleanup errors but don't raise them
+            log_error(f"Error during cleanup: {str(e)}")
+            
         finally:
-            self.context_pool = None
-            self.browser = None
-            self.http_session = None
+            # Nullify resources in a specific order
+            if hasattr(self, 'context_pool'):
+                self.context_pool = None
+            if hasattr(self, 'browser'):
+                self.browser = None
+            if hasattr(self, 'http_session'):
+                self.http_session = None
+            
+            # Suppress ResourceWarning for unclosed client session
             warnings.filterwarnings("ignore",
                                   category=ResourceWarning,
                                   message="unclosed.*<aiohttp.client.ClientSession.*>")
@@ -1575,6 +1624,39 @@ class XSSScanner:
         self.running = False
         self.interrupted = True
 
+    def get_url_signature(self, url: str) -> str:
+        """
+        Creates a signature for a URL based only on parameter names and positions.
+        Values are stripped out but order is preserved.
+        """
+        try:
+            parsed = urlparse(url)
+            
+            # Handle parameters in fragment (for SPAs)
+            if '#' in url and '?' in url.split('#')[1]:
+                fragment_parts = url.split('#')[1].split('?')
+                query = fragment_parts[1]
+            else:
+                query = parsed.query
+                
+            # Get parameters in order, remove values
+            params = []
+            if query:
+                for param in query.split('&'):
+                    if '=' in param:
+                        name = param.split('=')[0]
+                        if name:
+                            params.append(f"{name}=")
+                            
+            # Reconstruct URL with stripped values
+            base = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+            if params:
+                return f"{base}?{'&'.join(params)}"
+            return base
+        except Exception as e:
+            logging.error(f"Error generating URL signature: {str(e)}")
+            return url
+
     async def load_files(self) -> None:
         try:
             print(f"{Fore.YELLOW}📦 Loading URLs...{Style.RESET_ALL}")
@@ -1583,18 +1665,24 @@ class XSSScanner:
                 async with aiofiles.open(self.config.url_list, 'r') as f:
                     all_urls = [line.strip() for line in await f.readlines() if line.strip()]
                     valid_urls = []
-                    seen_urls = set()
+                    seen_signatures = set()
+                    skipped_same_params = 0
                     
                     for url in all_urls:
                         # First check if it's a valid URL with parameters
                         if not validate_url(url):
                             continue
                             
-                        # Deduplicate URLs
-                        if url not in seen_urls:
-                            seen_urls.add(url)
-                            valid_urls.append(url)
+                        # Get signature (strips values but keeps param order)
+                        signature = self.get_url_signature(url)
                         
+                        # Only add if we haven't seen this parameter combination
+                        if signature not in seen_signatures:
+                            seen_signatures.add(signature)
+                            valid_urls.append(url)
+                        else:
+                            skipped_same_params += 1
+                    
                     if not valid_urls:
                         print(f"\n{Fore.RED}❌ Error: No valid URLs found in the input file.{Style.RESET_ALL}")
                         print(f"{Fore.YELLOW}🧩 URLs must include parameters. Examples:{Style.RESET_ALL}")
@@ -1602,10 +1690,12 @@ class XSSScanner:
                         print(f"{Fore.CYAN}- http://testhtml5.vulnweb.com/%23/redir?url=value{Style.RESET_ALL}")
                         sys.exit(2)
                     
-                    # Print deduplication results
-                    print(f"{Fore.CYAN}📝 URL Deduplication Results:{Style.RESET_ALL}")
-                    print(f"{Fore.GREEN}✓ Original URLs: {len(all_urls)}{Style.RESET_ALL}")
-                    print(f"{Fore.GREEN}✓ After deduplication: {len(valid_urls)}{Style.RESET_ALL}")
+                    # Print results
+                    print(f"{Fore.CYAN}📝 URL Processing Results:{Style.RESET_ALL}")
+                    print(f"{Fore.GREEN}✓ Total URLs: {len(all_urls)}{Style.RESET_ALL}")
+                    print(f"{Fore.GREEN}✓ Unique parameter combinations: {len(valid_urls)}{Style.RESET_ALL}")
+                    if skipped_same_params > 0:
+                        print(f"{Fore.GREEN}ℹ Skipped URLs (same parameters): {skipped_same_params}{Style.RESET_ALL}")
                     
                     self.urls = valid_urls
                     
@@ -1692,30 +1782,44 @@ async def async_main() -> None:
         print(f"\n{Fore.RED}Error: {str(e)}{Style.RESET_ALL}")
         logging.error(f"Unhandled exception: {str(e)}", exc_info=True)
     finally:
-        if scanner:
-            await scanner.cleanup()
+        pass
 
 def setup_logging(config: Config) -> None:
+    """Configure logging with separated concerns for different log files"""
     logs_dir = Path("logs")
     logs_dir.mkdir(exist_ok=True)
-    timeout_filter = TimeoutFilter()
+    
+    # Clear any existing handlers
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.DEBUG)
     for handler in root_logger.handlers[:]:
         root_logger.removeHandler(handler)
+
+    # Create formatters
+    detailed_formatter = logging.Formatter('%(asctime)s %(levelname)s:%(message)s')
+    console_formatter = logging.Formatter('%(message)s')
+
+    # Main log file handler - captures DEBUG through INFO
     file_handler = logging.FileHandler(logs_dir / 'xss_scanner.log')
     file_handler.setLevel(logging.DEBUG)
-    file_handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s:%(message)s'))
+    file_handler.setFormatter(detailed_formatter)
+    file_handler.addFilter(lambda record: record.levelno < logging.ERROR)  # Only non-error messages
+
+    # Error log file handler - captures ERROR and CRITICAL
     error_handler = logging.FileHandler(logs_dir / 'errors.log')
     error_handler.setLevel(logging.ERROR)
-    error_handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s:%(message)s'))
+    error_handler.setFormatter(detailed_formatter)
+
+    # Console handler - for immediate feedback
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.ERROR)
-    console_handler.addFilter(timeout_filter)
-    console_handler.setFormatter(logging.Formatter('%(message)s'))
+    console_handler.setFormatter(console_formatter)
+    console_handler.addFilter(TimeoutFilter())
+
+    # Add all handlers to root logger
     root_logger.addHandler(file_handler)
-    root_logger.addHandler(console_handler)
     root_logger.addHandler(error_handler)
+    root_logger.addHandler(console_handler)
 
 class HeaderManager:
     @staticmethod
@@ -1772,6 +1876,34 @@ class HeaderManager:
     def get_headers(custom_headers: Dict[str, str] = None) -> Dict[str, str]:
         default_headers = HeaderManager.get_default_headers()
         return HeaderManager.merge_headers(default_headers, custom_headers)
+
+class RateLimiter:
+    def __init__(self, rate_limit: int):
+        self.rate_limit = rate_limit
+        self.tokens = rate_limit
+        self.last_update = time.time()
+        self.lock = asyncio.Lock()
+        self._sleep_time = 1.0 / rate_limit if rate_limit > 0 else 0
+    
+    async def acquire(self):
+        """Wait until a token is available for making a request."""
+        async with self.lock:
+            now = time.time()
+            time_passed = now - self.last_update
+            self.tokens = min(self.rate_limit, self.tokens + time_passed * self.rate_limit)
+            self.last_update = now
+            
+            if self.tokens < 1:
+                sleep_time = self._sleep_time
+                await asyncio.sleep(sleep_time)
+                self.tokens = 1
+            
+            self.tokens -= 1
+    
+    def reset(self):
+        """Reset the rate limiter state."""
+        self.tokens = self.rate_limit
+        self.last_update = time.time()
 
 def main() -> None:
     try:
