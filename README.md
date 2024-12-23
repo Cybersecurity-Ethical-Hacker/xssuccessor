@@ -18,6 +18,7 @@
 - **🌐 Custom Headers**: Allows the addition of custom HTTP headers to mimic specific client behaviors or bypass certain security measures.
 - **🛠️ Custom Payloads**: Utilize custom payload files to tailor scans to specific testing requirements.
 - **🖥️ Advanced Bypass Techniques**: It simulates real browser requests with custom advanced payloads, effectively bypassing cloud-based WAFs and protections.
+- **🔔 Telegram Live Vulnerability Notifications**: Receive real-time alerts on Telegram whenever new vulnerabilities are detected.
 - **📝 Flexible Output**: Outputs results in JSON or plain text format, suitable for integration into CI/CD pipelines or manual review.
 - **🔧 Configurable Parameters**: Adjust concurrency (workers), timeouts, and alert waiting times to optimize scans for different environments.
 - **📂 Organized Scans**: Automatically organizes scan results into structured directories based on domains or URL lists.
@@ -213,6 +214,50 @@ python xssuccessor.py --update
 - Graceful Exception Handling: The tool gracefully handles exceptions and logs errors to xss_scanner.log.
 - Informative Messages: Provides clear messages if payload files or URL lists are not found.
 - Interruption Support: Supports interruption via Ctrl+C, safely stopping the scan and providing a summary.
+
+🔧 How to Set Up Telegram Notifications
+
+Follow these simple steps to enable live vulnerability notifications via Telegram in XSSuccessor:
+
+1.📱 Create a Telegram Group
+
+Open Telegram and create a new group where you want to receive notifications.
+
+2.🤖 Add BotFather as Admin
+
+Search for @BotFather in Telegram.
+Start a chat with BotFather and create a new bot by following the instructions.
+Once created, invite your new bot to the group and promote it to an admin.
+
+3.🔑 Obtain Your Bot Token
+
+After creating the bot with BotFather, you will receive a Bot Token. Keep this token secure.
+
+Example: TELEGRAM_BOT_TOKEN = "your_bot_token_here"
+
+
+🆔 Get Your Chat ID
+
+Add the bot to your group and send a message to the group.
+To find the Chat ID, you can use the following method:
+Open your browser and navigate to: https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates
+
+Replace <YOUR_BOT_TOKEN> with your actual bot token.
+Look for the "chat":{"id":<YOUR_CHAT_ID>} in the JSON response.
+
+Example: TELEGRAM_CHAT_ID = "your_chat_id_here"
+
+
+🛠️ Update XSSuccessor
+
+TELEGRAM_BOT_TOKEN = "your_bot_token_here"
+TELEGRAM_CHAT_ID = "your_chat_id_here"
+TELEGRAM_NOTIFICATIONS_ENABLED = True
+
+🚀 Test the Setup
+
+Trigger a test notification from XSSuccessor to ensure everything is working correctly.
+You should receive a real-time alert in your Telegram group.
 
 ## 🛠️ Troubleshooting
 

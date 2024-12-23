@@ -22,7 +22,7 @@ import re
 import aiohttp
 from packaging.version import parse as parse_version
 from datetime import datetime
-from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse, quote
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Tuple
 
@@ -44,6 +44,11 @@ CONNECTIONS_PER_WORKER = 3
 MIN_RATE_LIMIT = 1
 MAX_RATE_LIMIT = 100
 ERROR_LOG_FILE = "logs/errors.log"
+
+# Telegram Configuration
+TELEGRAM_BOT_TOKEN = ""
+TELEGRAM_CHAT_ID = ""
+TELEGRAM_NOTIFICATIONS_ENABLED = False
 
 VERSION = "0.0.1"
 GITHUB_REPOSITORY: str = "Cybersecurity-Ethical-Hacker/xssuccessor"
@@ -872,6 +877,32 @@ class Config:
                 self.output_file = self.base_dir / f"xss_results_{timestamp}.txt"
 
 class XSSScanner:
+    async def send_telegram_notification(self, message: str) -> None:
+        """Send notification to Telegram if enabled."""
+        if not TELEGRAM_NOTIFICATIONS_ENABLED or not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+            return
+
+        try:
+            telegram_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+            message = (message.replace('<', '&lt;')
+                            .replace('>', '&gt;')
+                            .replace('&', '&amp;')
+                            .replace('"', '&quot;')
+                            .replace("'", '&#39;'))
+            
+            params = {
+                'chat_id': TELEGRAM_CHAT_ID,
+                'text': message,
+                'parse_mode': 'HTML'
+            }
+            
+            async with self.http_session.post(telegram_url, json=params) as response:
+                if response.status != 200:
+                    error_msg = await response.text()
+                    log_error(f"Telegram notification error: {error_msg}")
+        except Exception as e:
+            log_error(f"Telegram notification error: {str(e)}")
+
     def _extract_payload_from_url(self, url: str) -> Optional[str]:
         """Extract the payload from a URL by comparing with original parameters"""
         try:
@@ -1221,6 +1252,19 @@ class XSSScanner:
                 "alert_text": alert_text,
                 "type": xss_type
             }
+            
+            # Prepare and send Telegram notification
+            notification_message = (
+                f"🎯 XSS Vulnerability Found!\n\n"
+                f"🔍 Type: {xss_type.capitalize()} XSS\n"
+                f"🌐 Domain: {domain}\n"
+                f"📝 Parameter: {param}\n"
+                f"💉 Payload: {payload}\n"
+                f"🔗 URL: {url}\n"
+                f"⚠️ Alert Text: {alert_text}\n"
+                f"🕒 Time: {timestamp}"
+            )
+            await self.send_telegram_notification(notification_message)
             
             if self.config.json_output:
                 self.json_results.append(result)
