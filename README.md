@@ -240,10 +240,14 @@ Example: TELEGRAM_BOT_TOKEN = "your_bot_token_here"
 
 - Add the bot to your group and send a message to the group.
 - To find the Chat ID, you can use the following method:
-- Open your browser and navigate to: https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates
+- Open your browser and navigate to: 
 
-- Replace <YOUR_BOT_TOKEN> with your actual bot token.
-- Look for the "chat":{"id":<YOUR_CHAT_ID>} in the JSON response.
+```bash
+https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates
+```
+
+- Replace `<YOUR_BOT_TOKEN>` with your actual bot token.
+- Look for the `"chat":{"id":<YOUR_CHAT_ID>}` in the JSON response.
 
 ```bash
 Example: TELEGRAM_CHAT_ID = "your_chat_id_here"
