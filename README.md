@@ -256,8 +256,8 @@ Example: TELEGRAM_CHAT_ID = "your_chat_id_here"
 🛠️ Update XSSuccessor
 
 ```bash
-TELEGRAM_BOT_TOKEN = "your_bot_token_here"
-TELEGRAM_CHAT_ID = "your_chat_id_here"
+TELEGRAM_BOT_TOKEN = "your_bot_token_here ex: 7926311985:ABH04MhskQg-HzSgYrqQVGFz6q1I2AgykNA"
+TELEGRAM_CHAT_ID = "your_chat_id_here ex: -12345678"
 TELEGRAM_NOTIFICATIONS_ENABLED = True
 ```
 
