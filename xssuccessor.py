@@ -32,14 +32,15 @@ from tqdm.asyncio import tqdm_asyncio
 
 init(autoreset=True)
 
-MAX_CONCURRENT_WORKERS = 40
+MAX_CONCURRENT_WORKERS = 30
 DEFAULT_WORKERS = 10
-DEFAULT_BATCH_SIZE = 10
+PAYLOADS_BATCH_SIZE = 15
+URLS_BATCH_SIZE = 5
 MAX_WORKERS_PER_BATCH = 10
-DEFAULT_RATE_LIMIT = 10
+DEFAULT_RATE_LIMIT = 12
 DEFAULT_TIMEOUT = 8
 DEFAULT_ALERT_TIMEOUT = 6
-CONNECTIONS_PER_WORKER = 2
+CONNECTIONS_PER_WORKER = 3
 MIN_RATE_LIMIT = 1
 MAX_RATE_LIMIT = 100
 ERROR_LOG_FILE = "logs/errors.log"
@@ -615,8 +616,8 @@ def parse_arguments() -> argparse.Namespace:
                        help='Output results in JSON format')
     parser.add_argument('-H', '--header', action='append',
                        help='Custom headers can be specified multiple times. Format: "Header: Value"')
-    parser.add_argument('-b', '--batch-size', type=int, default=DEFAULT_BATCH_SIZE,
-                       help=f'Define the number of requests per batch (default: {DEFAULT_BATCH_SIZE})')
+    parser.add_argument('-b', '--batch-size', type=int, default=PAYLOADS_BATCH_SIZE,
+                       help=f'Define the number of requests per batch (default: {PAYLOADS_BATCH_SIZE})')
     parser.add_argument('-r', '--rate-limit', type=int, default=DEFAULT_RATE_LIMIT,
                        help=f'Maximum number of requests per second (default: {DEFAULT_RATE_LIMIT})')
     args = parser.parse_args()
@@ -781,7 +782,7 @@ class Config:
         self.timeout: int = args.timeout
         self.alert_timeout: int = args.alert_timeout
         self.max_workers: int = args.workers
-        self.batch_size: int = min(args.batch_size, DEFAULT_BATCH_SIZE)
+        self.batch_size: int = min(args.batch_size, PAYLOADS_BATCH_SIZE)
         self.rate_limit: int = args.rate_limit  # Add rate limit config
         self.playwright_version: str = playwright_version
         
@@ -1417,8 +1418,8 @@ class XSSScanner:
 - Version: {Fore.GREEN}{self.config.current_version}{Style.RESET_ALL}
 - Update Available: {Fore.GREEN}{self.config.version_info.update_available}{Style.RESET_ALL}
 - Max Workers: {Fore.GREEN}{self.config.max_workers}{Style.RESET_ALL}
+- Payloads Batch Size: {Fore.GREEN}{self.config.batch_size}{Style.RESET_ALL}
 - Rate Limit: {Fore.GREEN}{self.config.rate_limit} req/s{Style.RESET_ALL}
-- Batch Size: {Fore.GREEN}{self.config.batch_size}{Style.RESET_ALL}
 - Page Timeout: {Fore.GREEN}{self.config.timeout}s{Style.RESET_ALL}
 - Alert Timeout: {Fore.GREEN}{self.config.alert_timeout}s{Style.RESET_ALL}
 - Playwright Version: {Fore.GREEN}{self.config.playwright_version}{Style.RESET_ALL}
@@ -1482,16 +1483,13 @@ class XSSScanner:
             )
             
             # Process URLs in smaller batches with better progress tracking
-            small_batch_size = 5  # Process 5 URLs at a time
             total_urls = len(self.urls)
             
-            for i in range(0, total_urls, small_batch_size):
+            for i in range(0, total_urls, URLS_BATCH_SIZE):
+                batch_urls = self.urls[i:i + URLS_BATCH_SIZE]
+                current_batch_end = min(i + URLS_BATCH_SIZE, total_urls)
                 if not self.running:
                     break
-                
-                # Get current batch of URLs
-                batch_urls = self.urls[i:i + small_batch_size]
-                current_batch_end = min(i + small_batch_size, total_urls)
                 
                 # Update progress description to show current batch
                 self.progress_bar.bar_format = (
