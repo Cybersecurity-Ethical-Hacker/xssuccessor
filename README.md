@@ -267,6 +267,8 @@ Trigger a test notification from XSSuccessor to ensure everything is working cor
 
 You should receive a real-time alert in your Telegram group.
 
+![xssuccessor2](https://github.com/user-attachments/assets/477053f8-dc46-4fb5-a443-639ebc0cdb1e)
+
 
 ## 🛠️ Troubleshooting
 
