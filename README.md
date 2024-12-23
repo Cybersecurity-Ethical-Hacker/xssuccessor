@@ -215,7 +215,7 @@ python xssuccessor.py --update
 - Informative Messages: Provides clear messages if payload files or URL lists are not found.
 - Interruption Support: Supports interruption via Ctrl+C, safely stopping the scan and providing a summary.
 
-## 🔧 How to Set Up Telegram Notifications
+## 🤖 How to Set Up Telegram Notifications
 
 - Follow these simple steps to enable live vulnerability notifications via Telegram in XSSuccessor:
 
