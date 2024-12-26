@@ -301,7 +301,7 @@ If you encounter problems while using **XSSuccessor**, consider the following co
 Contributions are welcome! Please open an issue or submit a pull request for any improvements, bug fixes, or new features.
 
 > [!NOTE]
-> Lfier currently supports the detection of Reflected Cross-Site Scripting (XSS) vulnerabilities. I will expand its capabilities to include Stored XSS and DOM-based XSS detection in upcoming releases. 
+> XSSuccessor currently supports the detection of Reflected Cross-Site Scripting (XSS) and DOM based vulnerabilities. I will expand its capabilities to include Stored XSS detection in upcoming releases. 
 
 ## 🛡️ Ethical Usage Guidelines
 I am committed to promoting ethical practices in cybersecurity. Please ensure that you use this tool responsibly and in accordance with the following guidelines:
