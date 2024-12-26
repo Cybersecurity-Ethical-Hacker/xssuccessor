@@ -33,10 +33,10 @@ from tqdm.asyncio import tqdm_asyncio
 init(autoreset=True)
 
 MAX_CONCURRENT_WORKERS = 30
-DEFAULT_WORKERS = 10
+DEFAULT_WORKERS = 8
 PAYLOADS_BATCH_SIZE = 15
 URLS_BATCH_SIZE = 5
-MAX_WORKERS_PER_BATCH = 10
+MAX_WORKERS_PER_BATCH = 8
 DEFAULT_RATE_LIMIT = 12
 DEFAULT_TIMEOUT = 8
 DEFAULT_ALERT_TIMEOUT = 6
@@ -53,6 +53,337 @@ TELEGRAM_NOTIFICATIONS_ENABLED = False
 VERSION = "0.0.1"
 GITHUB_REPOSITORY: str = "Cybersecurity-Ethical-Hacker/xssuccessor"
 GITHUB_URL: str = f"https://github.com/{GITHUB_REPOSITORY}"
+
+class DOMXSSScanner:
+    def __init__(self):
+        # Enhanced DOM source and sink patterns
+        self.dom_patterns = {
+            'sources': [
+                # URL-based sources
+                r'location\s*\.\s*(href|search|hash|pathname)',
+                r'document\s*\.\s*(URL|documentURI|baseURI|referrer)',
+                r'window\s*\.\s*(name|location)',
+                r'document\.write\s*\(',
+                # Parameter-based sources
+                r'URLSearchParams',
+                r'new\s+URL\s*\(',
+                r'\.searchParams',
+                # Storage-based sources
+                r'localStorage',
+                r'sessionStorage',
+                r'document\.cookie',
+                # Fragment-based sources
+                r'location\.hash',
+                # Form-based sources
+                r'FormData',
+                r'\.elements',
+                r'\.value'
+            ],
+            'sinks': [
+                # HTML injection sinks
+                r'\.innerHTML\s*[=\+]=',
+                r'\.outerHTML\s*[=\+]=',
+                r'\.insertAdjacentHTML',
+                r'\.insertAdjacentElement',
+                r'\.insertBefore',
+                r'\.insertAfter',
+                # Script execution sinks
+                r'eval\s*\(',
+                r'Function\s*\(',
+                r'setTimeout\s*\(',
+                r'setInterval\s*\(',
+                r'document\.write\s*\(',
+                r'document\.writeln\s*\(',
+                # Element creation sinks
+                r'createElement\s*\(\s*[\'"]script[\'"]',
+                r'\.src\s*[=\+]=',
+                r'\.setAttribute\s*\(\s*[\'"]on\w+[\'"]',
+                # URL-based sinks
+                r'location\s*[=\+]=',
+                r'\.href\s*[=\+]='
+            ],
+            'dom_mutations': [
+                r'\.appendChild\s*\(',
+                r'\.replaceChild\s*\(',
+                r'\.replaceWith\s*\(',
+                r'\.insertBefore\s*\(',
+                r'\.after\s*\(',
+                r'\.before\s*\('
+            ],
+            'event_handlers': [
+                r'addEventListener\s*\(',
+                r'on\w+\s*=',
+                r'\.onload\s*=',
+                r'\.onerror\s*=',
+                r'\.onmouseover\s*='
+            ]
+        }
+
+    async def analyze_dom_content(self, content: str) -> Dict[str, List[str]]:
+        """
+        Perform detailed DOM analysis of the content.
+        Returns a dictionary with found patterns and their contexts.
+        """
+        results = {
+            'sources': [],
+            'sinks': [],
+            'mutations': [],
+            'events': []
+        }
+
+        # Extract all script content
+        script_tags = re.findall(r'<script[^>]*>(.*?)</script>', content, re.DOTALL)
+        inline_handlers = re.findall(r'on\w+\s*=\s*["\']([^"\']+)["\']', content)
+        js_content = '\n'.join(script_tags + inline_handlers)
+
+        # Analyze JavaScript content
+        for category, patterns in self.dom_patterns.items():
+            for pattern in patterns:
+                matches = re.finditer(pattern, js_content, re.IGNORECASE)
+                for match in matches:
+                    context = js_content[max(0, match.start()-20):min(len(js_content), match.end()+20)]
+                    if category == 'sources':
+                        results['sources'].append(context.strip())
+                    elif category == 'sinks':
+                        results['sinks'].append(context.strip())
+                    elif category == 'dom_mutations':
+                        results['mutations'].append(context.strip())
+                    elif category == 'event_handlers':
+                        results['events'].append(context.strip())
+
+        return results
+
+    async def check_dom_vulnerability(self, content: str, payload: str) -> Tuple[bool, Dict[str, Any]]:
+        """
+        Analyze if the content is vulnerable to DOM-based XSS.
+        Returns a tuple of (is_vulnerable, details).
+        """
+        dom_analysis = await self.analyze_dom_content(content)
+        
+        # Check for source-to-sink flows
+        has_sources = len(dom_analysis['sources']) > 0
+        has_sinks = len(dom_analysis['sinks']) > 0
+        has_mutations = len(dom_analysis['mutations']) > 0
+        has_events = len(dom_analysis['events']) > 0
+
+        # Enhanced payload-specific checks
+        payload_lower = payload.lower()
+        relevant_sinks = []
+        
+        if 'script' in payload_lower:
+            relevant_sinks.extend([s for s in dom_analysis['sinks'] 
+                                 if 'createElement' in s or 'innerHTML' in s])
+        
+        if 'on' in payload_lower and '=' in payload_lower:
+            relevant_sinks.extend([s for s in dom_analysis['sinks'] 
+                                 if 'setAttribute' in s or 'innerHTML' in s])
+
+        if 'javascript:' in payload_lower:
+            relevant_sinks.extend([s for s in dom_analysis['sinks'] 
+                                 if 'location' in s or 'href' in s])
+
+        is_vulnerable = (
+            (has_sources and has_sinks) or
+            (has_sources and has_mutations) or
+            (has_events and has_sinks) or
+            len(relevant_sinks) > 0
+        )
+
+        return is_vulnerable, {
+            'analysis': dom_analysis,
+            'relevant_sinks': relevant_sinks,
+            'payload_type': 'dom',
+            'confidence': 'high' if (has_sources and has_sinks) else 'medium'
+        }
+
+    async def quick_dom_check(self, response_text: str) -> bool:
+        """
+        Quick check for DOM-based XSS potential,
+        plus detection of createElement, appendChild, on[a-zA-Z]+=, etc.
+        """
+        # Check for suspicious DOM-manipulating functions
+        if re.search(r'createElement\s*\(\s*[\'"](?:script|iframe|svg)[\'"]', response_text, re.IGNORECASE):
+            return True
+        if re.search(r'appendChild\s*\(', response_text, re.IGNORECASE):
+            return True
+        if re.search(r'insertAdjacentHTML\s*\(', response_text, re.IGNORECASE):
+            return True
+        # Check for on-event attributes
+        if re.search(r'on[a-zA-Z]+\s*=\s*', response_text, re.IGNORECASE):
+            return True
+
+        script_tags = re.findall(r'<script[^>]*>(.*?)</script>', response_text, re.DOTALL)
+        for script in script_tags:
+            has_param_access = re.search(r'URLSearchParams|params\.get|location\.search', script, re.IGNORECASE)
+            has_dom_mod = re.search(r'innerHTML\s*=|document\.write|eval', script, re.IGNORECASE)
+
+            if has_param_access and has_dom_mod:
+                return True
+
+            if re.search(r'getElementById\([^)]+\)\.innerHTML\s*=', script, re.IGNORECASE):
+                return True
+
+            if 'window.onload' in script and 'innerHTML' in script:
+                return True
+        return False
+
+class ReflectionAnalyzer:
+    def __init__(self):
+        self.encoding_patterns = {
+            'html': [
+                (r'&[a-zA-Z]+;', html.unescape),
+                (r'&#x[0-9a-fA-F]+;', lambda x: chr(int(x[3:-1], 16))),
+                (r'&#[0-9]+;', lambda x: chr(int(x[2:-1])))
+            ],
+            'url': [
+                (r'%[0-9a-fA-F]{2}', urllib.parse.unquote),
+                (r'\+', lambda x: ' ')
+            ],
+            'js': [
+                (r'\\x[0-9a-fA-F]{2}', lambda x: bytes.fromhex(x[2:]).decode()),
+                (r'\\u[0-9a-fA-F]{4}', lambda x: chr(int(x[2:], 16))),
+                (r'\\"', lambda x: '"'),
+                (r"\\'", lambda x: "'")
+            ]
+        }
+
+    def normalize_content(self, content: str) -> str:
+        """Normalize content by handling different encodings."""
+        normalized = content
+        for encoding_type, patterns in self.encoding_patterns.items():
+            for pattern, decoder in patterns:
+                try:
+                    matches = re.finditer(pattern, normalized)
+                    for match in matches:
+                        try:
+                            decoded = decoder(match.group(0))
+                            normalized = normalized.replace(match.group(0), decoded)
+                        except:
+                            continue
+                except:
+                    continue
+        return normalized
+
+    async def analyze_reflection(self, content: str, payload: str) -> Tuple[bool, Dict[str, Any]]:
+        """
+        Analyze if and how the payload is reflected in the content.
+        Returns a tuple of (is_reflected, details).
+        """
+        normalized_content = self.normalize_content(content)
+        normalized_payload = self.normalize_content(payload)
+
+        # Check for direct reflection
+        direct_reflection = payload in content
+        normalized_reflection = normalized_payload in normalized_content
+
+        # Check for specific reflection contexts
+        reflections = []
+        if direct_reflection or normalized_reflection:
+            # Find all occurrences
+            for match in re.finditer(re.escape(normalized_payload), normalized_content):
+                start_pos = max(0, match.start() - 50)
+                end_pos = min(len(normalized_content), match.end() + 50)
+                context = normalized_content[start_pos:end_pos]
+                
+                # Determine the reflection context
+                if re.search(r'<script[^>]*>', context):
+                    reflections.append(('script', context))
+                elif re.search(r'<[^>]*=[\'"]*', context):
+                    reflections.append(('attribute', context))
+                elif re.search(r'javascript:', context):
+                    reflections.append(('javascript', context))
+                else:
+                    reflections.append(('html', context))
+
+        is_reflected = len(reflections) > 0 or direct_reflection or normalized_reflection
+
+        return is_reflected, {
+            'direct_reflection': direct_reflection,
+            'normalized_reflection': normalized_reflection,
+            'reflection_contexts': reflections,
+            'payload_type': 'reflected',
+            'confidence': 'high' if direct_reflection else 'medium'
+        }
+
+class VulnerabilityVerifier:
+    def __init__(self, dom_scanner: DOMXSSScanner, reflection_analyzer: ReflectionAnalyzer):
+        self.dom_scanner = dom_scanner
+        self.reflection_analyzer = reflection_analyzer
+
+    async def verify_vulnerability(self, page: Page, content: str, payload: str, url: str) -> Dict[str, Any]:
+        """
+        Comprehensive verification of XSS vulnerability.
+        Returns detailed analysis results.
+        """
+        # Check for DOM-based vulnerability
+        dom_vulnerable, dom_details = await self.dom_scanner.check_dom_vulnerability(content, payload)
+        
+        # Check for reflection-based vulnerability
+        is_reflected, reflection_details = await self.reflection_analyzer.analyze_reflection(content, payload)
+
+        # Determine the vulnerability type
+        vuln_types = []
+        if dom_vulnerable:
+            vuln_types.append('dom')
+        if is_reflected:
+            vuln_types.append('reflected')
+
+        vuln_type = 'hybrid' if len(vuln_types) > 1 else (vuln_types[0] if vuln_types else 'none')
+        
+        # Enhanced alert detection with context tracking
+        alert_details = await self._check_for_alert(page, url)
+
+        return {
+            'vulnerable': bool(vuln_types) and alert_details['alert_triggered'],
+            'vulnerability_type': vuln_type,
+            'dom_analysis': dom_details,
+            'reflection_analysis': reflection_details,
+            'alert_details': alert_details,
+            'url': url,
+            'payload': payload
+        }
+
+    async def _check_for_alert(self, page: Page, url: str) -> Dict[str, Any]:
+        """
+        Enhanced alert detection with better context tracking.
+        """
+        alert_triggered = False
+        alert_text = None
+        execution_context = None
+
+        async def handle_dialog(dialog):
+            nonlocal alert_triggered, alert_text, execution_context
+            alert_triggered = True
+            alert_text = dialog.message
+            try:
+                execution_context = await page.evaluate('() => document.currentScript?.src || "inline"')
+            except:
+                execution_context = "unknown"
+            await dialog.accept()
+
+        try:
+            page.on("dialog", handle_dialog)
+            await page.goto(url, wait_until='networkidle')
+            await page.wait_for_timeout(3000)  # Adjust timeout as needed
+
+            # Check for DOM modifications
+            dom_modified = await page.evaluate("""() => {
+                return {
+                    innerHTML_modified: window._domModified || false,
+                    script_executed: window._scriptExecuted || false,
+                    event_triggered: window._eventTriggered || false
+                }
+            }""")
+
+            return {
+                'alert_triggered': alert_triggered,
+                'alert_text': alert_text,
+                'execution_context': execution_context,
+                'dom_modifications': dom_modified
+            }
+
+        finally:
+            page.remove_listener("dialog", handle_dialog)
 
 class CustomStderr:
     def __init__(self, error_log_path):
@@ -183,40 +514,6 @@ def check_playwright_version() -> str:
             print(f"{Fore.RED}Error checking Playwright version: {e}{Style.RESET_ALL}")
             sys.exit(1)
     return playwright_version
-
-class DOMXSSScanner:
-    def __init__(self):
-        self.dom_patterns = {
-            'sources': re.compile(r'(?:document\.URL|location\.(?:href|search|hash)|document\.(?:referrer|cookie)|localStorage)',
-                                re.IGNORECASE),
-            'sinks': re.compile(r'(?:eval|innerHTML|outerHTML|document\.write|setTimeout|setInterval)',
-                              re.IGNORECASE)
-        }
-
-    async def quick_dom_check(self, response_text: str) -> bool:
-        """Quick initial check for DOM-based XSS potential without browser"""
-        # Check for innerHTML assignments to specific elements
-        if re.search(r'getElementById\([\'"]greeting[\'"]\)\.innerHTML', response_text, re.I):
-            return True
-
-        script_tags = re.findall(r'<script[^>]*>(.*?)</script>', response_text, re.DOTALL)
-        for script in script_tags:
-            # Check for URL parameter access
-            has_param_access = re.search(r'URLSearchParams|params\.get|location\.search', script, re.I)
-            # Check for DOM modification
-            has_dom_mod = re.search(r'innerHTML\s*=|document\.write', script, re.I)
-            
-            if has_param_access and has_dom_mod:
-                return True
-            
-            # Check for vulnerable patterns
-            if re.search(r'getElementById\([^)]+\)\.innerHTML\s*=', script, re.I):
-                return True
-
-            if 'window.onload' in script and 'innerHTML' in script:
-                return True
-
-        return False
 
 class TimeoutFilter(logging.Filter):
     TIMEOUT_PATTERNS = [
@@ -563,35 +860,23 @@ def validate_url(url: str) -> bool:
     Now accepts both empty parameters and parameters with values.
     """
     try:
-        # First decode any URL encoding
         decoded_url = urllib.parse.unquote(url)
-        
-        # Check for basic URL structure
         if not decoded_url.startswith(('http://', 'https://')):
             return False
-            
-        # Look for parameters either in normal query or after fragment
         if '?' not in decoded_url:
             return False
-            
-        # Check if there's at least one parameter with a name
         query_part = ""
         if '#' in decoded_url and '?' in decoded_url.split('#')[1]:
-            # Parameters are after the fragment
             query_part = decoded_url.split('#')[1].split('?')[1]
         else:
-            # Normal query parameters
             query_part = decoded_url.split('?')[1]
-            
-        # Check for any valid parameter (with or without value)
         params = query_part.split('&')
         for param in params:
             if param and '=' in param:
                 param_name = param.split('=')[0]
-                if param_name:  # Only check if parameter has a name
+                if param_name:
                     return True
         return False
-        
     except Exception:
         return False
 
@@ -626,10 +911,10 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument('-r', '--rate-limit', type=int, default=DEFAULT_RATE_LIMIT,
                        help=f'Maximum number of requests per second (default: {DEFAULT_RATE_LIMIT})')
     args = parser.parse_args()
-    
+
     if not args.update and not (args.domain or args.url_list):
         parser.error("One of the arguments -d/--domain -l/--url-list is required")
-    
+
     if not args.update:
         if args.workers < 1 or args.workers > MAX_CONCURRENT_WORKERS:
             parser.error(f"Workers must be between 1 and {MAX_CONCURRENT_WORKERS}")
@@ -639,8 +924,8 @@ def parse_arguments() -> argparse.Namespace:
             parser.error("Alert timeout must be between 1 and 30 seconds")
         if args.batch_size < 1 or args.batch_size > 1000:
             parser.error("Batch size must be between 1 and 1000")
-        if args.rate_limit < MIN_RATE_LIMIT or args.rate_limit > MAX_RATE_LIMIT:
-            parser.error(f"Rate limit must be between {MIN_RATE_LIMIT} and {MAX_RATE_LIMIT} requests per second")
+        if args.rate_limit < 1 or args.rate_limit > 100:
+            parser.error("Rate limit must be between 1 and 100 requests per second")
         if args.domain:
             if not validate_url(args.domain):
                 parser.error("\n\nPlease provide a valid URL with parameters. Examples:\n" +
@@ -788,15 +1073,13 @@ class Config:
         self.alert_timeout: int = args.alert_timeout
         self.max_workers: int = args.workers
         self.batch_size: int = min(args.batch_size, PAYLOADS_BATCH_SIZE)
-        self.rate_limit: int = args.rate_limit  # Add rate limit config
+        self.rate_limit: int = args.rate_limit
         self.playwright_version: str = playwright_version
-        
-        # Git handling
+
         git_handler = GitHandler()
         repo_status, repo_message = git_handler.check_repo_status()
         self.version_info: VersionInfo = self._check_version()
-        
-        # Header handling
+
         self.custom_headers_present = False
         custom_headers = {}
         if args.header:
@@ -809,8 +1092,7 @@ class Config:
                     print(f"{Fore.RED}Invalid header format: {header}. Headers must be in 'HeaderName: HeaderValue' format.{Style.RESET_ALL}")
                     sys.exit(1)
         self.headers = HeaderManager.get_headers(custom_headers)
-        
-        # Setup
+
         self._setup_directories(args)
         self._setup_files(args)
 
@@ -878,10 +1160,8 @@ class Config:
 
 class XSSScanner:
     async def send_telegram_notification(self, message: str) -> None:
-        """Send notification to Telegram if enabled."""
         if not TELEGRAM_NOTIFICATIONS_ENABLED or not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
             return
-
         try:
             telegram_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
             message = (message.replace('<', '&lt;')
@@ -889,13 +1169,11 @@ class XSSScanner:
                             .replace('&', '&amp;')
                             .replace('"', '&quot;')
                             .replace("'", '&#39;'))
-            
             params = {
                 'chat_id': TELEGRAM_CHAT_ID,
                 'text': message,
                 'parse_mode': 'HTML'
             }
-            
             async with self.http_session.post(telegram_url, json=params) as response:
                 if response.status != 200:
                     error_msg = await response.text()
@@ -904,11 +1182,9 @@ class XSSScanner:
             log_error(f"Telegram notification error: {str(e)}")
 
     def _extract_payload_from_url(self, url: str) -> Optional[str]:
-        """Extract the payload from a URL by comparing with original parameters"""
         try:
             parsed = urlparse(url)
             params = parse_qs(parsed.query, keep_blank_values=True)
-            # Look for the payload in parameter values
             for param_values in params.values():
                 for value in param_values:
                     if any(payload in value for payload in self.payloads):
@@ -945,7 +1221,13 @@ class XSSScanner:
             'failed_payloads': 0,
             'errors': 0
         }
+        # Initialize the enhanced detection components
         self.dom_scanner = DOMXSSScanner()
+        self.reflection_analyzer = ReflectionAnalyzer()
+        self.vulnerability_verifier = VulnerabilityVerifier(
+            dom_scanner=self.dom_scanner,
+            reflection_analyzer=self.reflection_analyzer
+        )
         self.error_types: Dict[str, int] = {}
         self.start_time: Optional[float] = None
         self.output_lock: asyncio.Lock = asyncio.Lock()
@@ -969,21 +1251,22 @@ class XSSScanner:
         connector = aiohttp.TCPConnector(
             limit=self.config.max_workers * CONNECTIONS_PER_WORKER,
             ttl_dns_cache=300,
+            force_close=True,
             enable_cleanup_closed=True,
-            force_close=False,
-            keepalive_timeout=60,
-            ssl=False
+            ssl=False,
+            use_dns_cache=True,
+            resolver=aiohttp.AsyncResolver(nameservers=['8.8.8.8', '1.1.1.1']),
         )
         timeout = aiohttp.ClientTimeout(
             total=self.config.timeout,
             connect=self.config.timeout / 2,
+            sock_connect=self.config.timeout / 2,
             sock_read=self.config.timeout
         )
         self.http_session = aiohttp.ClientSession(
             connector=connector,
             headers=self.config.headers,
-            timeout=timeout,
-            trust_env=True
+            timeout=timeout
         )
 
     async def close_http_session(self) -> None:
@@ -1024,63 +1307,85 @@ class XSSScanner:
             return False
 
     def inject_payload(self, url: str, payload: str) -> List[Tuple[str, str]]:
-        parsed = urlparse(url)
-        params = parse_qs(parsed.query, keep_blank_values=True)
+        if '?' not in url:
+            return []
+        base_url, query = url.split('?', 1)
         injected_urls = []
-        
-        # Only process parameters that have an equals sign in the original URL
-        original_params = {param.split('=')[0]: param.split('=')[1] if '=' in param else None 
-                          for param in parsed.query.split('&') if param}
-        
-        for param in params:
-            # Skip parameters that didn't have an equals sign in the original URL
-            if param not in original_params or original_params[param] is None:
+        param_pairs = query.split('&')
+        for pair in param_pairs:
+            if '=' not in pair:
                 continue
-            
-            new_params = params.copy()
-            new_params[param] = [payload]
-            new_query = urlencode(new_params, doseq=True)
-            new_url = urlunparse(parsed._replace(query=new_query))
-            injected_urls.append((new_url, param))
-        
+            param_name = pair.split('=', 1)[0]
+            new_pairs = []
+            for original_pair in param_pairs:
+                if original_pair.startswith(f"{param_name}="):
+                    new_pairs.append(f"{param_name}={payload}")
+                else:
+                    original_param_name, original_value = original_pair.split('=', 1)
+                    new_pairs.append(f"{original_param_name}={original_value}")
+            new_url = f"{base_url}?{'&'.join(new_pairs)}"
+            injected_urls.append((new_url, param_name))
         return injected_urls
 
+    # REFINE COMPLEX REFLECTION CHECK, with an extra pattern for <XxxOnLoad=
     async def _check_complex_reflection(self, content: str, payload: str) -> bool:
         encoded_variations = self._get_encoded_variations(payload)
+
+        # Check direct presence of each variation
         if any(var in content for var in encoded_variations):
             return True
+
+        # Fuzzy approach ignoring newlines
+        fuzzy_payload = payload.replace('\n','').replace('\r','')
+        fuzzy_content = content.replace('\n','').replace('\r','')
+        if fuzzy_payload in fuzzy_content:
+            return True
+
+        # Detect partial merges like <SvgOnLoad=, <DivOnError=, etc.
+        if re.search(r'<\w+on(?:load|error|click|mouseover)\s*=', content, re.IGNORECASE):
+            return True
+
+        # Check for "svg" references
         if 'svg' in payload.lower():
             if any(pattern.search(content) for pattern in self.SVG_PATTERNS):
                 return True
+
+        # Check for "javascript:" references
         if 'javascript:' in payload.lower():
             if any(pattern.search(content) for pattern in self.JS_PATTERNS):
                 return True
-        if any(event in payload.lower() for event in ['onload', 'onerror', 'onmouseover']):
+
+        # Event patterns: onload, onerror, etc.
+        if any(evt in payload.lower() for evt in ['onload', 'onerror', 'onmouseover']):
             if any(pattern.search(content) for pattern in self.EVENT_PATTERNS):
                 return True
+
         if 'data:' in payload.lower():
             data_patterns = [
-                re.compile(r'data:text/html.*,', re.I),
-                re.compile(r'data:image/svg.*,', re.I),
-                re.compile(r'data:application/x-.*,', re.I)
+                re.compile(r'data:text/html.*,', re.IGNORECASE),
+                re.compile(r'data:image/svg.*,', re.IGNORECASE),
+                re.compile(r'data:application/x-.*,', re.IGNORECASE)
             ]
             if any(pattern.search(content) for pattern in data_patterns):
                 return True
+
         if 'expression' in payload.lower():
             expr_patterns = [
-                re.compile(r'expression\s*\(', re.I),
-                re.compile(r'expr\s*\(', re.I)
+                re.compile(r'expression\s*\(', re.IGNORECASE),
+                re.compile(r'expr\s*\(', re.IGNORECASE)
             ]
             if any(pattern.search(content) for pattern in expr_patterns):
                 return True
+
         if any(char in payload for char in ['`', '+', '${']):
             concat_patterns = [
-                re.compile(r'\$\{.*\}', re.S),
+                re.compile(r'\$\{.*\}', re.DOTALL),
                 re.compile(r'["\'][\s+]*\+[\s+]*["\']'),
                 re.compile(r'`[^`]*\$\{[^}]*\}[^`]*`')
             ]
             if any(pattern.search(content) for pattern in concat_patterns):
                 return True
+
         if 'constructor' in payload:
             constructor_patterns = [
                 re.compile(r'constructor\s*\('),
@@ -1089,20 +1394,27 @@ class XSSScanner:
             ]
             if any(pattern.search(content) for pattern in constructor_patterns):
                 return True
-        if re.search(r'(\\x[0-9a-f]{2}|\\u[0-9a-f]{4}|&#x[0-9a-f]+;)', payload, re.I):
+
+        if re.search(r'(\\x[0-9a-f]{2}|\\u[0-9a-f]{4}|&#x[0-9a-f]+;)', payload, re.IGNORECASE):
             try:
-                escaped_payload = re.sub(r'(\\x[0-9a-f]{2}|\\u[0-9a-f]{4}|&#x[0-9a-f]+;)',
-                                       lambda m: bytes.fromhex(m.group(1).replace('\\x','')
-                                                                       .replace('\\u','')
-                                                                       .replace('&#x','')
-                                                                       .replace(';','')).decode('utf-8'),
-                                       payload,
-                                       flags=re.I)
+                escaped_payload = re.sub(
+                    r'(\\x[0-9a-f]{2}|\\u[0-9a-f]{4}|&#x[0-9a-f]+;)',
+                    lambda m: bytes.fromhex(
+                        m.group(1)
+                         .replace('\\x','')
+                         .replace('\\u','')
+                         .replace('&#x','')
+                         .replace(';','')
+                    ).decode('utf-8', errors='ignore'),
+                    payload,
+                    flags=re.IGNORECASE
+                )
                 if escaped_payload in content:
                     return True
             except Exception as e:
                 log_error(f"Error decoding escape sequences: {str(e)}")
                 return False
+
         return False
 
     def _get_encoded_variations(self, payload: str) -> List[str]:
@@ -1115,134 +1427,207 @@ class XSSScanner:
         variations.append(html.escape(html.escape(payload)))
         variations.append(payload.encode('unicode-escape').decode())
         variations.append(base64.b64encode(payload.encode()).decode())
-        variations.extend([
-            ''.join([f'&#{ord(c)};' for c in payload]),
-            ''.join([f'&#x{ord(c):x};' for c in payload])
-        ])
+        variations.append(''.join([f'&#{ord(c)};' for c in payload]))
+        variations.append(''.join([f'&#x{ord(c):x};' for c in payload]))
         return variations
 
     async def validate_alert(self, page: Page, url: str, potential_dom: bool = False) -> Tuple[bool, Optional[str], str]:
-        """Validate both reflected and DOM XSS with a single browser instance"""
+        """
+        Enhanced XSS validation with balanced DOM vs Reflected detection.
+        Returns: (is_vulnerable, alert_text, vulnerability_type)
+        """
         alert_triggered = False
         alert_text = None
-        xss_type = 'unknown'
-        dom_detected = False
-        is_reflected = False
-        payload = self._extract_payload_from_url(url)
-
-        async def handle_dialog(dialog):
-            nonlocal alert_triggered, alert_text
-            alert_text = dialog.message
-            await dialog.accept()
-            alert_triggered = True
-
+        xss_type = "none"
+        
         try:
+            # Set up monitoring script before navigation
+            await page.add_init_script("""
+                window._xssMonitor = {
+                    domModified: false,
+                    scriptExecuted: false,
+                    eventTriggered: false,
+                    urlParamAccessed: false,
+                    innerHTMLModified: false,
+                    documentWriteUsed: false,
+                    evaluationOccurred: false,
+                    directWrite: false,
+                    clientSideFlow: false,
+                    source: null,
+                    lastSourceAccess: 0,
+                    lastDomModification: 0
+                };
+
+                // Monitor URL parameter access
+                const originalURLSearchParams = window.URLSearchParams;
+                window.URLSearchParams = new Proxy(originalURLSearchParams, {
+                    construct: function(target, args) {
+                        window._xssMonitor.urlParamAccessed = true;
+                        window._xssMonitor.clientSideFlow = true;
+                        window._xssMonitor.source = 'urlParams';
+                        window._xssMonitor.lastSourceAccess = Date.now();
+                        return new target(...args);
+                    }
+                });
+
+                // Monitor DOM mutations
+                new MutationObserver((mutations) => {
+                    for (const mutation of mutations) {
+                        if (mutation.type === 'childList' || mutation.type === 'characterData') {
+                            window._xssMonitor.domModified = true;
+                            window._xssMonitor.lastDomModification = Date.now();
+                            
+                            // Check if modification happened through script
+                            const stack = new Error().stack || '';
+                            if (stack.includes('eval') || stack.includes('setTimeout') || 
+                                stack.includes('setInterval') || stack.includes('Function')) {
+                                window._xssMonitor.clientSideFlow = true;
+                            }
+                            
+                            // Check for script elements
+                            if (mutation.target.nodeName === 'SCRIPT' || 
+                                [...(mutation.addedNodes || [])].some(node => node.nodeName === 'SCRIPT')) {
+                                window._xssMonitor.scriptExecuted = true;
+                            }
+                        }
+                    }
+                }).observe(document, {
+                    childList: true,
+                    characterData: true,
+                    subtree: true,
+                    characterDataOldValue: true
+                });
+
+                // Monitor innerHTML modifications
+                const originalInnerHTMLDescriptor = Object.getOwnPropertyDescriptor(Element.prototype, 'innerHTML');
+                Object.defineProperty(Element.prototype, 'innerHTML', {
+                    set: function(value) {
+                        window._xssMonitor.innerHTMLModified = true;
+                        window._xssMonitor.domModified = true;
+                        window._xssMonitor.lastDomModification = Date.now();
+                        
+                        // Check if modification is from client-side code
+                        const stack = new Error().stack || '';
+                        window._xssMonitor.clientSideFlow = stack.includes('onload') || 
+                                                           stack.includes('setTimeout') || 
+                                                           stack.includes('addEventListener');
+                        
+                        return originalInnerHTMLDescriptor.set.call(this, value);
+                    },
+                    get: originalInnerHTMLDescriptor.get
+                });
+
+                // Monitor document.write
+                const originalWrite = document.write;
+                document.write = function() {
+                    window._xssMonitor.documentWriteUsed = true;
+                    window._xssMonitor.directWrite = true;
+                    window._xssMonitor.source = 'documentWrite';
+                    return originalWrite.apply(this, arguments);
+                };
+
+                // Monitor script execution
+                const originalSetTimeout = window.setTimeout;
+                window.setTimeout = function() {
+                    window._xssMonitor.scriptExecuted = true;
+                    window._xssMonitor.clientSideFlow = true;
+                    window._xssMonitor.source = 'setTimeout';
+                    return originalSetTimeout.apply(this, arguments);
+                };
+
+                // Monitor eval
+                const originalEval = window.eval;
+                window.eval = function() {
+                    window._xssMonitor.evaluationOccurred = true;
+                    window._xssMonitor.clientSideFlow = true;
+                    window._xssMonitor.source = 'eval';
+                    return originalEval.apply(this, arguments);
+                };
+
+                // Monitor location/URL access
+                let locationDescriptor = Object.getOwnPropertyDescriptor(window, 'location');
+                Object.defineProperty(window, 'location', {
+                    get: function() {
+                        window._xssMonitor.urlParamAccessed = true;
+                        window._xssMonitor.lastSourceAccess = Date.now();
+                        window._xssMonitor.source = 'location';
+                        return locationDescriptor.get.call(this);
+                    }
+                });
+            """)
+
+            # Set up dialog handler
+            async def handle_dialog(dialog):
+                nonlocal alert_triggered, alert_text
+                alert_triggered = True
+                alert_text = dialog.message
+                await dialog.accept()
+
             page.on("dialog", handle_dialog)
             
-            # First get and analyze the raw response without browser rendering
-            async with self.http_session.get(url) as response:
-                content = await response.text()
-                
-                # Check for reflection in raw response
-                if payload:
-                    is_reflected = payload in content or payload in html.unescape(content)
-                    for encoded_var in self._get_encoded_variations(payload):
-                        if encoded_var in content:
-                            is_reflected = True
-                            break
-                
-                # Look for DOM XSS patterns in source
-                dom_patterns = [
-                    (r'document\.getElementById.*\.innerHTML', ''),
-                    (r'location\.(?:search|hash|href).*(?:innerHTML|eval|document\.write)', ''),
-                    (r'URLSearchParams.*innerHTML', ''),
-                    (r'window\.onload.*innerHTML', ''),
-                    (r'document\.write\s*\(.*\)', ''),
-                    (r'eval\s*\(.*\)', ''),
-                    (r'setTimeout\s*\(.*\)', ''),
-                    (r'setInterval\s*\(.*\)', ''),
-                    (r'new\s+Function\s*\(.*\)', '')
-                ]
-                
-                for pattern, _ in dom_patterns:
-                    if re.search(pattern, content, re.IGNORECASE | re.DOTALL):
-                        dom_detected = True
-                        break  # Found one pattern, no need to check others
-
-                # If found DOM patterns, add monitoring
-                if dom_detected:
-                    await page.add_init_script("""
-                        window.addEventListener('DOMContentLoaded', () => {
-                            // Monitor DOM modifications
-                            const observer = new MutationObserver((mutations) => {
-                                mutations.forEach((mutation) => {
-                                    if (mutation.type === 'childList' || mutation.type === 'characterData') {
-                                        window._domModified = true;
-                                    }
-                                });
-                            });
-                            observer.observe(document.body, {
-                                childList: true,
-                                characterData: true,
-                                subtree: true
-                            });
-                            
-                            // Monitor script execution
-                            const originalSetTimeout = window.setTimeout;
-                            window.setTimeout = function() {
-                                window._scriptExecuted = true;
-                                return originalSetTimeout.apply(this, arguments);
-                            };
-                            
-                            const originalEval = window.eval;
-                            window.eval = function() {
-                                window._scriptExecuted = true;
-                                return originalEval.apply(this, arguments);
-                            };
-                        });
-                    """)
-
+            try:
                 # Navigate and wait for load
-                await page.goto(url, timeout=self.config.timeout * 1000)
-                await page.wait_for_load_state('domcontentloaded')
-                
-                # Wait for potential JavaScript execution
+                await page.goto(url, timeout=self.config.timeout * 1000, wait_until='domcontentloaded')
                 await page.wait_for_timeout(self.config.alert_timeout * 1000)
-                
-                # Check for DOM modifications silently
-                if dom_detected:
-                    dom_modified = await page.evaluate("() => window._domModified === true")
-                    script_executed = await page.evaluate("() => window._scriptExecuted === true")
-                    if dom_modified or script_executed:
-                        dom_detected = True
 
-                # Determine XSS type based on our findings
+                # Check execution context and determine XSS type
+                monitor_status = await page.evaluate("() => window._xssMonitor")
+                
                 if alert_triggered:
-                    if is_reflected and dom_detected:
-                        xss_type = 'both'
-                    elif is_reflected:
-                        xss_type = 'reflected'
-                    elif dom_detected:
-                        xss_type = 'dom'
+                    # Determine XSS type based on execution flow
+                    if monitor_status.get('clientSideFlow') and monitor_status.get('urlParamAccessed'):
+                        # Clear DOM-based XSS indicators:
+                        # 1. URL parameter access followed by DOM modification
+                        # 2. Client-side flow (setTimeout, eval, etc.)
+                        # 3. Time gap between source access and DOM modification
+                        time_gap = monitor_status.get('lastDomModification', 0) - monitor_status.get('lastSourceAccess', 0)
+                        if time_gap > 0 and time_gap < 1000:  # Within 1 second
+                            xss_type = "dom"
+                        else:
+                            xss_type = "reflected"
                     else:
-                        # If got an alert but couldn't determine type, default to reflected
-                        xss_type = 'reflected'
+                        # If no clear client-side flow, likely reflected
+                        xss_type = "reflected"
+                elif monitor_status.get('domModified'):
+                    # Check for DOM XSS without alert
+                    if monitor_status.get('clientSideFlow') and monitor_status.get('urlParamAccessed'):
+                        alert_triggered = True
+                        alert_text = "DOM Modification Detected"
+                        xss_type = "dom"
+
+                # Log detection details for debugging
+                if alert_triggered:
+                    logging.debug(f"XSS Detection - Type: {xss_type}")
+                    logging.debug(f"Monitor Status: {json.dumps(monitor_status, indent=2)}")
 
                 return alert_triggered, alert_text, xss_type
 
+            except TimeoutError:
+                logging.debug(f"Page load timeout for URL: {url}")
+                return False, None, "none"
+                
+            except Exception as e:
+                logging.error(f"Page navigation error: {str(e)}")
+                return False, None, "none"
+
         except Exception as e:
-            async with self.stats_lock:
-                self.stats['errors'] += 1
-                self.error_types[type(e).__name__] = self.error_types.get(type(e).__name__, 0) + 1
-            log_error(f"Error validating alert for {url}: {str(e)}")
-            return False, None, 'reflected'
+            logging.error(f"Validation error: {str(e)}")
+            return False, None, "none"
+
         finally:
-            page.remove_listener("dialog", handle_dialog)
+            try:
+                page.remove_listener("dialog", handle_dialog)
+            except Exception:
+                pass
 
     async def record_vulnerability(self, domain: str, param: str, payload: str,
-                                   url: str, alert_text: str, xss_type: str = 'reflected') -> None:
+                                 url: str, alert_text: str, xss_type: str,
+                                 reflection_details: Optional[Dict] = None,
+                                 dom_details: Optional[Dict] = None) -> None:
         async with self.output_lock:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            
+            # Enhanced result with detailed analysis
             result = {
                 "timestamp": timestamp,
                 "domain": domain,
@@ -1250,71 +1635,131 @@ class XSSScanner:
                 "payload": payload,
                 "url": url,
                 "alert_text": alert_text,
-                "type": xss_type
+                "type": xss_type,
+                "analysis": {
+                    "reflection": reflection_details,
+                    "dom": dom_details
+                }
             }
-            
-            # Prepare and send Telegram notification
+
+            # Create detailed notification message
             notification_message = (
                 f"🎯 XSS Vulnerability Found!\n\n"
-                f"🔍 Type: {xss_type.capitalize()} XSS\n"
+                f"🔍 Type: {xss_type.capitalize()}\n"
                 f"🌐 Domain: {domain}\n"
                 f"📝 Parameter: {param}\n"
                 f"💉 Payload: {payload}\n"
                 f"🔗 URL: {url}\n"
                 f"⚠️ Alert Text: {alert_text}\n"
-                f"🕒 Time: {timestamp}"
+                f"🕒 Time: {timestamp}\n"
             )
+
+            if reflection_details:
+                notification_message += "✓ Reflection detected in content\n"
+                if reflection_details.get('reflection_contexts'):
+                    contexts = reflection_details['reflection_contexts']
+                    notification_message += f"✓ Found in contexts: {', '.join(c[0] for c in contexts)}\n"
+
+            if dom_details:
+                notification_message += "✓ DOM vulnerability detected\n"
+                if dom_details.get('sources'):
+                    notification_message += f"✓ DOM Sources found: {len(dom_details['sources'])}\n"
+                if dom_details.get('sinks'):
+                    notification_message += f"✓ DOM Sinks found: {len(dom_details['sinks'])}\n"
+                if dom_details.get('events'):
+                    notification_message += f"✓ Event handlers found\n"
+
             await self.send_telegram_notification(notification_message)
-            
+
             if self.config.json_output:
                 self.json_results.append(result)
             else:
+                # Format the results for text output
                 self.results.extend([
-                    "XSS Found: ",
-                    f"Type: {xss_type.capitalize()} XSS",
+                    "=" * 50,
+                    "XSS Vulnerability Found:",
+                    "-" * 25,
+                    f"Type: {xss_type.capitalize()}",
                     f"Domain: {domain}",
                     f"Parameter: {param}",
                     f"Payload: {payload}",
                     f"URL: {url}",
                     f"Alert Text: {alert_text}",
-                    ""
+                    f"Timestamp: {timestamp}",
+                    "",
+                    "Analysis Details:",
+                    "-" * 17
                 ])
 
+                if reflection_details:
+                    self.results.extend([
+                        "Reflection Analysis:",
+                        f"• Direct Reflection: {'Yes' if reflection_details.get('direct_reflection') else 'No'}",
+                        f"• Normalized Reflection: {'Yes' if reflection_details.get('normalized_reflection') else 'No'}"
+                    ])
+                    if reflection_details.get('reflection_contexts'):
+                        self.results.append("• Found in contexts:")
+                        for context_type, context in reflection_details['reflection_contexts']:
+                            self.results.append(f"  - {context_type}")
+
+                if dom_details:
+                    self.results.extend([
+                        "",
+                        "DOM Analysis:",
+                        f"• Sources Found: {len(dom_details.get('sources', []))}",
+                        f"• Sinks Found: {len(dom_details.get('sinks', []))}",
+                        f"• DOM Mutations: {len(dom_details.get('mutations', []))}"
+                    ])
+                    if dom_details.get('confidence'):
+                        self.results.append(f"• Confidence: {dom_details['confidence']}")
+
+                self.results.extend(["", "=" * 50, ""])
+
     async def process_parameter_payloads(self, url: str, param: str, progress_bar: tqdm_asyncio) -> None:
-        domain = urlparse(url).netloc
-        parsed = urlparse(url)
-        params = parse_qs(parsed.query, keep_blank_values=True)
-        
+        domain = url.split('/')[2]
         try:
             for payload in self.payloads:
                 if not self.running:
                     break
-                    
-                # Apply rate limiting
+
                 await self.rate_limiter.acquire()
-                
-                new_params = params.copy()
-                new_params[param] = [payload]
-                new_query = urlencode(new_params, doseq=True)
-                test_url = urlunparse(parsed._replace(query=new_query))
-                
+
+                base_url = url.split('?')[0]
+                param_pairs = url.split('?')[1].split('&')
+                new_pairs = []
+                for pair in param_pairs:
+                    if '=' in pair:
+                        current_param = pair.split('=')[0]
+                        if current_param == param:
+                            new_pairs.append(f"{param}={payload}")
+                        else:
+                            new_pairs.append(pair)
+                    else:
+                        new_pairs.append(pair)
+
+                test_url = f"{base_url}?{'&'.join(new_pairs)}"
                 async with self.stats_lock:
                     self.stats['payloads_tested'] += 1
-                
+
                 try:
-                    # Get initial response
                     async with self.http_session.get(test_url) as response:
                         if response.status != 200:
-                            # Update progress even for failed requests
                             if progress_bar:
                                 progress_bar.update(1)
                             continue
-                            
+
                         response_text = await response.text()
-                        is_reflected = payload in response_text
+
+                        # Simple reflection check
+                        is_reflected_simple = (payload in response_text)
+                        # Complex reflection check
+                        is_reflected_advanced = await self._check_complex_reflection(response_text, payload)
+                        is_reflected = is_reflected_simple or is_reflected_advanced
+
+                        # DOM pattern check
                         potential_dom = await self.dom_scanner.quick_dom_check(response_text)
 
-                        # Skip Playwright check if no reflection and no DOM potential
+                        # Skip only if BOTH reflection and DOM checks fail
                         if not is_reflected and not potential_dom:
                             async with self.stats_lock:
                                 self.stats['failed_payloads'] += 1
@@ -1322,27 +1767,25 @@ class XSSScanner:
                                 progress_bar.update(1)
                             continue
 
-                        # Single Playwright check that handles both types
+                        # Otherwise proceed with browser test
                         context, page = await self.acquire_context()
                         try:
                             alert_triggered, alert_text, xss_type = await self.validate_alert(
-                                page, 
-                                test_url, 
+                                page,
+                                test_url,
                                 potential_dom=potential_dom
                             )
 
                             if alert_triggered:
                                 async with self.stats_lock:
                                     self.stats['successful_payloads'] += 1
-                                
+
                                 payload_number = self.payload_index_map.get(payload, 0)
                                 type_label = "DOM Based" if xss_type == "dom" else "Reflected"
+                                domain_field = f"{domain:<25}"
+                                param_field = f"{param:<10}"
+                                type_field = f"{type_label:<10}"
 
-                                # Format results fields with fixed widths for alignment
-                                domain_field = f"{domain:<25}"  # Pad domain to 25 chars
-                                param_field = f"{param:<10}"    # Pad parameter to 10 chars
-                                type_field = f"{type_label:<10}" # Pad type to 12 chars
-                                
                                 message = (
                                     f"{Fore.GREEN}🎯 XSS Found!{Style.RESET_ALL}  "
                                     f"Domain: {Fore.YELLOW}{domain_field}{Style.RESET_ALL}  |  "
@@ -1350,10 +1793,9 @@ class XSSScanner:
                                     f"Type: {Fore.YELLOW}{type_field}{Style.RESET_ALL}  |  "
                                     f"Payload: {Fore.YELLOW}#{payload_number}{Style.RESET_ALL}"
                                 )
-                                
                                 if progress_bar:
                                     progress_bar.write(message)
-                                
+
                                 await self.record_vulnerability(
                                     domain=domain,
                                     param=param,
@@ -1362,11 +1804,9 @@ class XSSScanner:
                                     alert_text=alert_text,
                                     xss_type=type_label
                                 )
-                                
-                                # Update progress and skip remaining payloads for this parameter
+
                                 remaining_payloads = len(self.payloads) - (self.payloads.index(payload) + 1)
                                 if progress_bar:
-                                    # Update for current test and remaining payloads that will be skipped
                                     progress_bar.update(1 + remaining_payloads)
                                 break
                             else:
@@ -1374,7 +1814,7 @@ class XSSScanner:
                                     self.stats['failed_payloads'] += 1
                                 if progress_bar:
                                     progress_bar.update(1)
-                                    
+
                         finally:
                             await self.release_context(context, page)
 
@@ -1382,65 +1822,50 @@ class XSSScanner:
                     async with self.stats_lock:
                         self.stats['errors'] += 1
                         self.error_types[type(e).__name__] = self.error_types.get(type(e).__name__, 0) + 1
-                    # Update progress even when errors occur
                     if progress_bar:
                         progress_bar.update(1)
-                    # Write error to log file instead of printing
                     with open(self.ERROR_LOG_FILE, 'a', encoding='utf-8') as f:
                         f.write(f"Error processing {test_url}: {str(e)}\n")
-                
+
         except Exception as e:
             log_error(f"Error in parameter payload processing: {str(e)}")
-            # Update progress for any remaining tests in case of errors
             if progress_bar:
                 remaining = len(self.payloads)
                 progress_bar.update(remaining)
 
     async def process_batch(self, batch_urls: List[str], progress_bar: tqdm_asyncio) -> None:
         try:
-            # Use a smaller number of concurrent workers for better control
             semaphore = asyncio.Semaphore(MAX_WORKERS_PER_BATCH)
             tasks = []
-            
+
             async def process_with_semaphore(url: str, param: str) -> None:
                 try:
                     async with semaphore:
                         await self.process_parameter_payloads(url, param, progress_bar)
-                        # Small delay after each parameter test
                         await asyncio.sleep(0.1)
                 except Exception as e:
                     log_error(f"Error processing URL {url} with parameter {param}: {str(e)}")
                     if progress_bar:
                         progress_bar.update(1)
-            
-            # Process URLs in sequential batches
+
             for url in batch_urls:
                 if not self.running:
                     break
-                
                 try:
                     parsed = urlparse(url)
                     params = parse_qs(parsed.query, keep_blank_values=True)
-                    
-                    # Only create tasks for valid parameters
                     for param in params:
                         if await self.should_test_parameter(url, param):
                             task = asyncio.create_task(process_with_semaphore(url, param))
                             tasks.append(task)
-                    
-                    # Process tasks in smaller chunks for better control
                     while tasks:
-                        # Take up to x tasks at a time
                         current_tasks, tasks = tasks[:MAX_WORKERS_PER_BATCH], tasks[MAX_WORKERS_PER_BATCH:]
                         if current_tasks:
                             await asyncio.gather(*current_tasks, return_exceptions=True)
-                        # Add a small delay between chunks
                         await asyncio.sleep(0.2)
-                    
                 except Exception as e:
                     log_error(f"Error processing batch URL {url}: {str(e)}")
                     continue
-
         except Exception as e:
             log_error(f"Error in process_batch: {str(e)}")
 
@@ -1458,6 +1883,7 @@ class XSSScanner:
 {center_text(f"{Fore.CYAN}By Dimitris Chatzidimitris{Style.RESET_ALL}")}
 {center_text(f"{Fore.CYAN}Email: dimitris.chatzidimitris@gmail.com{Style.RESET_ALL}")}
 {center_text(f"{Fore.CYAN}Async-Powered / 100% Valid Results / Bypasses Cloud/WAF{Style.RESET_ALL}")}\n
+
 {Fore.CYAN}🔧Configuration:{Style.RESET_ALL}
 - Version: {Fore.GREEN}{self.config.current_version}{Style.RESET_ALL}
 - Update Available: {Fore.GREEN}{self.config.version_info.update_available}{Style.RESET_ALL}
@@ -1470,7 +1896,9 @@ class XSSScanner:
 - Payloads File: {Fore.GREEN}{self.config.payload_file}{Style.RESET_ALL}
 - Custom Headers: {Fore.GREEN}{'Yes' if self.config.custom_headers_present else 'Default'}{Style.RESET_ALL}
 - Output Format: {Fore.GREEN}{'JSON' if self.config.json_output else 'Text'}{Style.RESET_ALL}
-- Output File: {Fore.GREEN}{str(self.config.output_file.resolve())}{Style.RESET_ALL}\n"""
+- Output File: {Fore.GREEN}{str(self.config.output_file.resolve())}{Style.RESET_ALL}
+
+"""
         print(banner)
 
     async def check_reflection(self, url: str, payload: str) -> bool:
@@ -1494,66 +1922,55 @@ class XSSScanner:
         self.banner()
         await self.load_files()
         self.start_time = time.time()
-        
+
         try:
             await self.initialize_http_session()
             await self.initialize_browser()
-            
-            # Warm up only a few initial connections
+
             async def warm_up_connection(url: str) -> None:
                 try:
                     async with self.http_session.head(url, timeout=2):
                         pass
                 except Exception:
                     pass
-            
-            # Warm up with just first 3 URLs instead of 10
+
             first_batch = self.urls[:min(3, len(self.urls))]
             await asyncio.gather(*[warm_up_connection(url) for url in first_batch])
-            
-            # Initialize progress bar with more descriptive format
+
+            total_urls = len(self.urls)
             self.progress_bar = tqdm_asyncio(
                 total=self.total_tests,
                 desc="Progress",
                 bar_format=(
                     "Progress: {percentage:3.0f}%|{bar}| "
-                    f"[URLs: {{n_fmt}}/{len(self.urls)}] "
+                    f"[URLs: {{n_fmt}}/{total_urls}] "
                     "[{n_fmt}/{total_fmt} Tests] "
-                    "[Time:{elapsed} - Est:{remaining}]"
+                    "[Time:{elapsed:<6} - Est:{remaining:<6}]"
                 ),
                 colour="cyan",
                 dynamic_ncols=True,
                 unit="test"
             )
-            
-            # Process URLs in smaller batches with better progress tracking
-            total_urls = len(self.urls)
-            
+
             for i in range(0, total_urls, URLS_BATCH_SIZE):
-                batch_urls = self.urls[i:i + URLS_BATCH_SIZE]
-                current_batch_end = min(i + URLS_BATCH_SIZE, total_urls)
                 if not self.running:
                     break
-                
-                # Update progress description to show current batch
+                batch_urls = self.urls[i:i + URLS_BATCH_SIZE]
+                current_batch_end = min(i + URLS_BATCH_SIZE, total_urls)
                 self.progress_bar.bar_format = (
                     "Progress: {percentage:3.0f}%|{bar}| "
-                    f"[URLs: {i+1}-{current_batch_end}/{len(self.urls)}] "
+                    f"[URLs: {i+1}-{current_batch_end}/{total_urls}] "
                     "[{n_fmt}/{total_fmt} Tests] "
                     "[Time:{elapsed} - Est:{remaining}]"
                 )
-                
-                # Process the current batch
                 try:
                     await self.process_batch(batch_urls, self.progress_bar)
                 except Exception as e:
                     log_error(f"Error processing batch {i+1}-{current_batch_end}: {str(e)}")
                     continue
-                
-                # Add delay between batches
                 await asyncio.sleep(0.5)
-            
             await asyncio.sleep(0)
+
         except Exception as e:
             log_error(f"Error in run method: {str(e)}")
         finally:
@@ -1561,7 +1978,6 @@ class XSSScanner:
 
     async def cleanup(self) -> None:
         try:
-            # Close progress bar first
             if self.progress_bar:
                 try:
                     remaining = self.progress_bar.total - self.progress_bar.n
@@ -1569,19 +1985,16 @@ class XSSScanner:
                         self.progress_bar.update(remaining)
                     self.progress_bar.refresh()
                     self.progress_bar.close()
-                except Exception:
+                except:
                     pass
                 self.progress_bar = None
 
-            # Reset rate limiter if exists
             if hasattr(self, 'rate_limiter'):
                 self.rate_limiter.reset()
 
-            # Save results if we found vulnerabilities
             if self.stats['successful_payloads'] > 0:
                 await self.save_results()
 
-            # Clean up browser contexts
             if hasattr(self, 'context_pool') and self.context_pool is not None:
                 while not self.context_pool.empty():
                     try:
@@ -1593,39 +2006,30 @@ class XSSScanner:
                     except Exception:
                         pass
 
-            # Close browser with timeout
             if hasattr(self, 'browser') and self.browser:
                 try:
                     await asyncio.wait_for(self.browser.close(), timeout=2.0)
-                except Exception:
+                except:
                     pass
 
-            # Close HTTP session with timeout
             if hasattr(self, 'http_session') and self.http_session and not self.http_session.closed:
                 try:
                     await asyncio.wait_for(self.http_session.close(), timeout=1.0)
-                    await asyncio.sleep(0.1)  # Small delay to ensure proper closure
-                except Exception:
+                    await asyncio.sleep(0.1)
+                except:
                     pass
 
-            # Print final stats if not interrupted
             if not self.interrupted:
                 self.print_final_stats()
-
         except Exception as e:
-            # Log any cleanup errors but don't raise them
             log_error(f"Error during cleanup: {str(e)}")
-            
         finally:
-            # Nullify resources in a specific order
             if hasattr(self, 'context_pool'):
                 self.context_pool = None
             if hasattr(self, 'browser'):
                 self.browser = None
             if hasattr(self, 'http_session'):
                 self.http_session = None
-            
-            # Suppress ResourceWarning for unclosed client session
             warnings.filterwarnings("ignore",
                                   category=ResourceWarning,
                                   message="unclosed.*<aiohttp.client.ClientSession.*>")
@@ -1667,21 +2071,13 @@ class XSSScanner:
         self.interrupted = True
 
     def get_url_signature(self, url: str) -> str:
-        """
-        Creates a signature for a URL based only on parameter names and positions.
-        Values are stripped out but order is preserved.
-        """
         try:
             parsed = urlparse(url)
-            
-            # Handle parameters in fragment (for SPAs)
             if '#' in url and '?' in url.split('#')[1]:
                 fragment_parts = url.split('#')[1].split('?')
                 query = fragment_parts[1]
             else:
                 query = parsed.query
-                
-            # Get parameters in order, remove values
             params = []
             if query:
                 for param in query.split('&'):
@@ -1689,8 +2085,6 @@ class XSSScanner:
                         name = param.split('=')[0]
                         if name:
                             params.append(f"{name}=")
-                            
-            # Reconstruct URL with stripped values
             base = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
             if params:
                 return f"{base}?{'&'.join(params)}"
@@ -1702,83 +2096,68 @@ class XSSScanner:
     async def load_files(self) -> None:
         try:
             print(f"{Fore.YELLOW}📦 Loading URLs...{Style.RESET_ALL}")
-            
+
             if self.config.url_list:
                 async with aiofiles.open(self.config.url_list, 'r') as f:
                     all_urls = [line.strip() for line in await f.readlines() if line.strip()]
                     valid_urls = []
                     seen_signatures = set()
                     skipped_same_params = 0
-                    
+
                     for url in all_urls:
-                        # First check if it's a valid URL with parameters
                         if not validate_url(url):
                             continue
-                            
-                        # Get signature (strips values but keeps param order)
                         signature = self.get_url_signature(url)
-                        
-                        # Only add if we haven't seen this parameter combination
                         if signature not in seen_signatures:
                             seen_signatures.add(signature)
                             valid_urls.append(url)
                         else:
                             skipped_same_params += 1
-                    
+
                     if not valid_urls:
                         print(f"\n{Fore.RED}❌ Error: No valid URLs found in the input file.{Style.RESET_ALL}")
                         print(f"{Fore.YELLOW}🧩 URLs must include parameters. Examples:{Style.RESET_ALL}")
                         print(f"{Fore.CYAN}- http://testhtml5.vulnweb.com/#/redir?url={Style.RESET_ALL}")
                         print(f"{Fore.CYAN}- http://testhtml5.vulnweb.com/%23/redir?url=value{Style.RESET_ALL}")
                         sys.exit(2)
-                    
-                    # Print results
+
                     print(f"{Fore.CYAN}📝 URL Processing Results:{Style.RESET_ALL}")
                     print(f"{Fore.GREEN}✓ Total URLs: {len(all_urls)}{Style.RESET_ALL}")
                     print(f"{Fore.GREEN}✓ Unique parameter combinations: {len(valid_urls)}{Style.RESET_ALL}")
                     if skipped_same_params > 0:
                         print(f"{Fore.GREEN}ℹ Skipped URLs (same parameters): {skipped_same_params}{Style.RESET_ALL}")
-                    
                     self.urls = valid_urls
-                    
             elif self.config.domain:
-                # Single domain validation already done in parse_arguments
                 self.urls = [self.config.domain]
-                
+
             async with aiofiles.open(self.config.payload_file, 'r') as f:
                 self.payloads = list(dict.fromkeys([line.strip() for line in await f.readlines() if line.strip()]))
                 self.payload_index_map = {payload: idx + 1 for idx, payload in enumerate(self.payloads)}
-            
+
             self.stats['total_urls'] = len(self.urls)
             total_parameters = 0
             for url in self.urls:
                 decoded_url = urllib.parse.unquote(url)
-                # Get query part from either normal query or after fragment
                 query_part = ""
                 if '#' in decoded_url and '?' in decoded_url.split('#')[1]:
-                    # Parameters are after the fragment
                     fragment_parts = decoded_url.split('#')[1]
                     query_part = fragment_parts.split('?')[1]
                 elif '?' in decoded_url:
-                    # Normal query parameters
                     query_part = decoded_url.split('?')[1]
-                
-                # Count parameters that have an equals sign
                 params = []
                 for param in query_part.split('&'):
                     if param and '=' in param:
                         param_name = param.split('=')[0]
-                        if param_name:  # Ensure parameter name exists
+                        if param_name:
                             params.append(param_name)
-                
                 total_parameters += len(params)
-            
+
             self.stats['parameters_tested'] = total_parameters
             self.total_tests = total_parameters * len(self.payloads)
-            
+
             print(f"{Fore.CYAN}🔗 Loaded {len(self.urls)} URLs and {len(self.payloads)} payloads{Style.RESET_ALL}")
             print(f"{Fore.YELLOW}🔍 Starting the scan...{Style.RESET_ALL}\n")
-            
+
         except FileNotFoundError as e:
             print(f"{Fore.RED}📂 Error: Could not find file: {e.filename}{Style.RESET_ALL}")
             sys.exit(1)
@@ -1827,38 +2206,31 @@ async def async_main() -> None:
         pass
 
 def setup_logging(config: Config) -> None:
-    """Configure logging with separated concerns for different log files"""
     logs_dir = Path("logs")
     logs_dir.mkdir(exist_ok=True)
-    
-    # Clear any existing handlers
+
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.DEBUG)
     for handler in root_logger.handlers[:]:
         root_logger.removeHandler(handler)
 
-    # Create formatters
     detailed_formatter = logging.Formatter('%(asctime)s %(levelname)s:%(message)s')
     console_formatter = logging.Formatter('%(message)s')
 
-    # Main log file handler - captures DEBUG through INFO
     file_handler = logging.FileHandler(logs_dir / 'xss_scanner.log')
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(detailed_formatter)
-    file_handler.addFilter(lambda record: record.levelno < logging.ERROR)  # Only non-error messages
+    file_handler.addFilter(lambda record: record.levelno < logging.ERROR)
 
-    # Error log file handler - captures ERROR and CRITICAL
     error_handler = logging.FileHandler(logs_dir / 'errors.log')
     error_handler.setLevel(logging.ERROR)
     error_handler.setFormatter(detailed_formatter)
 
-    # Console handler - for immediate feedback
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.ERROR)
     console_handler.setFormatter(console_formatter)
     console_handler.addFilter(TimeoutFilter())
 
-    # Add all handlers to root logger
     root_logger.addHandler(file_handler)
     root_logger.addHandler(error_handler)
     root_logger.addHandler(console_handler)
@@ -1926,24 +2298,20 @@ class RateLimiter:
         self.last_update = time.time()
         self.lock = asyncio.Lock()
         self._sleep_time = 1.0 / rate_limit if rate_limit > 0 else 0
-    
+
     async def acquire(self):
-        """Wait until a token is available for making a request."""
         async with self.lock:
             now = time.time()
             time_passed = now - self.last_update
             self.tokens = min(self.rate_limit, self.tokens + time_passed * self.rate_limit)
             self.last_update = now
-            
             if self.tokens < 1:
                 sleep_time = self._sleep_time
                 await asyncio.sleep(sleep_time)
                 self.tokens = 1
-            
             self.tokens -= 1
-    
+
     def reset(self):
-        """Reset the rate limiter state."""
         self.tokens = self.rate_limit
         self.last_update = time.time()
 
