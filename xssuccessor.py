@@ -1343,39 +1343,75 @@ class XSSScanner:
             injected_urls.append((new_url, param_name))
         return injected_urls
 
-    # REFINE COMPLEX REFLECTION CHECK, with an extra pattern for <XxxOnLoad=
+    # REFINE COMPLEX REFLECTION CHECK
     async def _check_complex_reflection(self, content: str, payload: str) -> bool:
+        """
+        Enhanced reflection check that safely handles escape sequences and various injection patterns.
+        Returns True if a reflection is detected, False otherwise.
+        """
+        # Check for direct variations first
         encoded_variations = self._get_encoded_variations(payload)
-
-        # Check direct presence of each variation
         if any(var in content for var in encoded_variations):
             return True
 
-        # Fuzzy approach ignoring newlines
-        fuzzy_payload = payload.replace('\n','').replace('\r','')
-        fuzzy_content = content.replace('\n','').replace('\r','')
+        # Fuzzy check ignoring whitespace and newlines
+        fuzzy_payload = payload.replace('\n', '').replace('\r', '').replace(' ', '')
+        fuzzy_content = content.replace('\n', '').replace('\r', '').replace(' ', '')
         if fuzzy_payload in fuzzy_content:
             return True
+
+        # Handle escape sequences safely
+        if re.search(r'(\\x[0-9a-fA-F]{2}|\\u[0-9a-fA-F]{4}|&#x[0-9a-fA-F]+;)', payload, re.IGNORECASE):
+            try:
+                def decode_hex(match):
+                    try:
+                        hex_str = match.group(1)
+                        if hex_str.startswith('\\x'):
+                            hex_val = hex_str[2:]
+                            if len(hex_val) == 2 and all(c in '0123456789abcdefABCDEF' for c in hex_val):
+                                return bytes.fromhex(hex_val).decode('utf-8', errors='ignore')
+                        elif hex_str.startswith('\\u'):
+                            hex_val = hex_str[2:]
+                            if len(hex_val) == 4 and all(c in '0123456789abcdefABCDEF' for c in hex_val):
+                                return chr(int(hex_val, 16))
+                        elif hex_str.startswith('&#x'):
+                            hex_val = hex_str[3:].rstrip(';')
+                            if all(c in '0123456789abcdefABCDEF' for c in hex_val):
+                                return chr(int(hex_val, 16))
+                        return match.group(0)  # Return original if can't decode
+                    except:
+                        return match.group(0)  # Return original on any error
+
+                escaped_payload = re.sub(
+                    r'((?:\\x[0-9a-fA-F]{2}|\\u[0-9a-fA-F]{4}|&#x[0-9a-fA-F]+;))',
+                    decode_hex,
+                    payload
+                )
+                if escaped_payload in content:
+                    return True
+            except Exception:
+                pass  # Silently continue if decoding fails
 
         # Detect partial merges like <SvgOnLoad=, <DivOnError=, etc.
         if re.search(r'<\w+on(?:load|error|click|mouseover)\s*=', content, re.IGNORECASE):
             return True
 
-        # Check for "svg" references
+        # SVG pattern checks
         if 'svg' in payload.lower():
             if any(pattern.search(content) for pattern in self.SVG_PATTERNS):
                 return True
 
-        # Check for "javascript:" references
+        # JavaScript protocol checks
         if 'javascript:' in payload.lower():
             if any(pattern.search(content) for pattern in self.JS_PATTERNS):
                 return True
 
-        # Event patterns: onload, onerror, etc.
-        if any(evt in payload.lower() for evt in ['onload', 'onerror', 'onmouseover']):
+        # Event handler pattern checks
+        if any(evt in payload.lower() for evt in ['onload', 'onerror', 'onmouseover', 'onclick']):
             if any(pattern.search(content) for pattern in self.EVENT_PATTERNS):
                 return True
 
+        # Data URI scheme checks
         if 'data:' in payload.lower():
             data_patterns = [
                 re.compile(r'data:text/html.*,', re.IGNORECASE),
@@ -1385,6 +1421,7 @@ class XSSScanner:
             if any(pattern.search(content) for pattern in data_patterns):
                 return True
 
+        # Expression checks
         if 'expression' in payload.lower():
             expr_patterns = [
                 re.compile(r'expression\s*\(', re.IGNORECASE),
@@ -1393,7 +1430,8 @@ class XSSScanner:
             if any(pattern.search(content) for pattern in expr_patterns):
                 return True
 
-        if any(char in payload for char in ['`', '+', '${']):
+        # Template literal and concatenation checks
+        if any(char in payload for char in ['`', '+', '${']): 
             concat_patterns = [
                 re.compile(r'\$\{.*\}', re.DOTALL),
                 re.compile(r'["\'][\s+]*\+[\s+]*["\']'),
@@ -1402,6 +1440,7 @@ class XSSScanner:
             if any(pattern.search(content) for pattern in concat_patterns):
                 return True
 
+        # Constructor checks
         if 'constructor' in payload:
             constructor_patterns = [
                 re.compile(r'constructor\s*\('),
@@ -1410,26 +1449,6 @@ class XSSScanner:
             ]
             if any(pattern.search(content) for pattern in constructor_patterns):
                 return True
-
-        if re.search(r'(\\x[0-9a-f]{2}|\\u[0-9a-f]{4}|&#x[0-9a-f]+;)', payload, re.IGNORECASE):
-            try:
-                escaped_payload = re.sub(
-                    r'(\\x[0-9a-f]{2}|\\u[0-9a-f]{4}|&#x[0-9a-f]+;)',
-                    lambda m: bytes.fromhex(
-                        m.group(1)
-                         .replace('\\x','')
-                         .replace('\\u','')
-                         .replace('&#x','')
-                         .replace(';','')
-                    ).decode('utf-8', errors='ignore'),
-                    payload,
-                    flags=re.IGNORECASE
-                )
-                if escaped_payload in content:
-                    return True
-            except Exception as e:
-                log_error(f"Error decoding escape sequences: {str(e)}")
-                return False
 
         return False
 
