@@ -1468,7 +1468,7 @@ class XSSScanner:
 
     async def validate_alert(self, page: Page, url: str, potential_dom: bool = False) -> Tuple[bool, Optional[str], str]:
         """
-        Enhanced XSS validation with balanced DOM vs Reflected detection.
+        Enhanced XSS validation that detects actual DOM manipulation and script execution.
         Returns: (is_vulnerable, alert_text, vulnerability_type)
         """
         alert_triggered = False
@@ -1476,122 +1476,80 @@ class XSSScanner:
         xss_type = "none"
         
         try:
-            # Set up monitoring script before navigation
             await page.add_init_script("""
                 window._xssMonitor = {
-                    domModified: false,
                     scriptExecuted: false,
-                    eventTriggered: false,
-                    urlParamAccessed: false,
-                    innerHTMLModified: false,
-                    documentWriteUsed: false,
-                    evaluationOccurred: false,
-                    directWrite: false,
-                    clientSideFlow: false,
-                    source: null,
-                    lastSourceAccess: 0,
-                    lastDomModification: 0
+                    alertTriggered: false,
+                    parameterUsed: false,
+                    domManipulated: false,
+                    manipulationType: null,
+                    parameterValue: null,
+                    executionContext: null,
+                    
+                    // Track where the parameter was used
+                    parameterUsageContext: {
+                        innerHTML: false,
+                        outerHTML: false,
+                        document_write: false,
+                        eval_exec: false
+                    }
                 };
 
                 // Monitor URL parameter access
                 const originalURLSearchParams = window.URLSearchParams;
                 window.URLSearchParams = new Proxy(originalURLSearchParams, {
                     construct: function(target, args) {
-                        window._xssMonitor.urlParamAccessed = true;
-                        window._xssMonitor.clientSideFlow = true;
-                        window._xssMonitor.source = 'urlParams';
-                        window._xssMonitor.lastSourceAccess = Date.now();
-                        return new target(...args);
+                        const params = new target(...args);
+                        const originalGet = params.get;
+                        
+                        params.get = function(name) {
+                            const value = originalGet.call(this, name);
+                            if (value) {
+                                window._xssMonitor.parameterUsed = true;
+                                window._xssMonitor.parameterValue = value;
+                            }
+                            return value;
+                        };
+                        return params;
                     }
                 });
 
-                // Monitor DOM mutations
-                new MutationObserver((mutations) => {
-                    for (const mutation of mutations) {
-                        if (mutation.type === 'childList' || mutation.type === 'characterData') {
-                            window._xssMonitor.domModified = true;
-                            window._xssMonitor.lastDomModification = Date.now();
-                            
-                            // Check if modification happened through script
-                            const stack = new Error().stack || '';
-                            if (stack.includes('eval') || stack.includes('setTimeout') || 
-                                stack.includes('setInterval') || stack.includes('Function')) {
-                                window._xssMonitor.clientSideFlow = true;
-                            }
-                            
-                            // Check for script elements
-                            if (mutation.target.nodeName === 'SCRIPT' || 
-                                [...(mutation.addedNodes || [])].some(node => node.nodeName === 'SCRIPT')) {
-                                window._xssMonitor.scriptExecuted = true;
-                            }
-                        }
-                    }
-                }).observe(document, {
-                    childList: true,
-                    characterData: true,
-                    subtree: true,
-                    characterDataOldValue: true
-                });
-
-                // Monitor innerHTML modifications
+                // Monitor innerHTML assignments
                 const originalInnerHTMLDescriptor = Object.getOwnPropertyDescriptor(Element.prototype, 'innerHTML');
                 Object.defineProperty(Element.prototype, 'innerHTML', {
                     set: function(value) {
-                        window._xssMonitor.innerHTMLModified = true;
-                        window._xssMonitor.domModified = true;
-                        window._xssMonitor.lastDomModification = Date.now();
-                        
-                        // Check if modification is from client-side code
-                        const stack = new Error().stack || '';
-                        window._xssMonitor.clientSideFlow = stack.includes('onload') || 
-                                                           stack.includes('setTimeout') || 
-                                                           stack.includes('addEventListener');
-                        
+                        if (window._xssMonitor.parameterUsed && 
+                            window._xssMonitor.parameterValue && 
+                            value.includes(window._xssMonitor.parameterValue)) {
+                            window._xssMonitor.domManipulated = true;
+                            window._xssMonitor.manipulationType = 'innerHTML';
+                            window._xssMonitor.parameterUsageContext.innerHTML = true;
+                        }
                         return originalInnerHTMLDescriptor.set.call(this, value);
                     },
                     get: originalInnerHTMLDescriptor.get
                 });
 
-                // Monitor document.write
-                const originalWrite = document.write;
-                document.write = function() {
-                    window._xssMonitor.documentWriteUsed = true;
-                    window._xssMonitor.directWrite = true;
-                    window._xssMonitor.source = 'documentWrite';
-                    return originalWrite.apply(this, arguments);
-                };
-
-                // Monitor script execution
-                const originalSetTimeout = window.setTimeout;
-                window.setTimeout = function() {
-                    window._xssMonitor.scriptExecuted = true;
-                    window._xssMonitor.clientSideFlow = true;
-                    window._xssMonitor.source = 'setTimeout';
-                    return originalSetTimeout.apply(this, arguments);
-                };
+                // Monitor actual alerts
+                window.alert = new Proxy(window.alert, {
+                    apply: function(target, thisArg, args) {
+                        window._xssMonitor.alertTriggered = true;
+                        return target.apply(thisArg, args);
+                    }
+                });
 
                 // Monitor eval
                 const originalEval = window.eval;
-                window.eval = function() {
-                    window._xssMonitor.evaluationOccurred = true;
-                    window._xssMonitor.clientSideFlow = true;
-                    window._xssMonitor.source = 'eval';
+                window.eval = function(code) {
+                    if (window._xssMonitor.parameterValue && 
+                        code.includes(window._xssMonitor.parameterValue)) {
+                        window._xssMonitor.scriptExecuted = true;
+                        window._xssMonitor.parameterUsageContext.eval_exec = true;
+                    }
                     return originalEval.apply(this, arguments);
                 };
-
-                // Monitor location/URL access
-                let locationDescriptor = Object.getOwnPropertyDescriptor(window, 'location');
-                Object.defineProperty(window, 'location', {
-                    get: function() {
-                        window._xssMonitor.urlParamAccessed = true;
-                        window._xssMonitor.lastSourceAccess = Date.now();
-                        window._xssMonitor.source = 'location';
-                        return locationDescriptor.get.call(this);
-                    }
-                });
             """)
 
-            # Set up dialog handler
             async def handle_dialog(dialog):
                 nonlocal alert_triggered, alert_text
                 alert_triggered = True
@@ -1601,39 +1559,24 @@ class XSSScanner:
             page.on("dialog", handle_dialog)
             
             try:
-                # Navigate and wait for load
                 await page.goto(url, timeout=self.config.timeout * 1000, wait_until='domcontentloaded')
                 await page.wait_for_timeout(self.config.alert_timeout * 1000)
 
-                # Check execution context and determine XSS type
                 monitor_status = await page.evaluate("() => window._xssMonitor")
                 
-                if alert_triggered:
-                    # Determine XSS type based on execution flow
-                    if monitor_status.get('clientSideFlow') and monitor_status.get('urlParamAccessed'):
-                        # Clear DOM-based XSS indicators:
-                        # 1. URL parameter access followed by DOM modification
-                        # 2. Client-side flow (setTimeout, eval, etc.)
-                        # 3. Time gap between source access and DOM modification
-                        time_gap = monitor_status.get('lastDomModification', 0) - monitor_status.get('lastSourceAccess', 0)
-                        if time_gap > 0 and time_gap < 1000:  # Within 1 second
-                            xss_type = "dom"
-                        else:
-                            xss_type = "reflected"
-                    else:
-                        # If no clear client-side flow, likely reflected
-                        xss_type = "reflected"
-                elif monitor_status.get('domModified'):
-                    # Check for DOM XSS without alert
-                    if monitor_status.get('clientSideFlow') and monitor_status.get('urlParamAccessed'):
-                        alert_triggered = True
-                        alert_text = "DOM Modification Detected"
+                # If parameter was used in innerHTML and caused DOM manipulation, it's DOM-based
+                if monitor_status.get('parameterUsed') and monitor_status.get('domManipulated'):
+                    if monitor_status.get('manipulationType') == 'innerHTML':
                         xss_type = "dom"
-
-                # Log detection details for debugging
-                if alert_triggered:
-                    logging.debug(f"XSS Detection - Type: {xss_type}")
-                    logging.debug(f"Monitor Status: {json.dumps(monitor_status, indent=2)}")
+                        # If it also triggered an alert, mark it
+                        if alert_triggered:
+                            alert_text = alert_text or "DOM Manipulation Detected"
+                        else:
+                            alert_triggered = True
+                            alert_text = "DOM Manipulation Detected"
+                # Otherwise if got an alert, it's probably reflected
+                elif alert_triggered:
+                    xss_type = "reflected"
 
                 return alert_triggered, alert_text, xss_type
 
@@ -1670,11 +1613,7 @@ class XSSScanner:
                 "payload": payload,
                 "url": url,
                 "alert_text": alert_text,
-                "type": xss_type,
-                "analysis": {
-                    "reflection": reflection_details,
-                    "dom": dom_details
-                }
+                "type": xss_type
             }
 
             # Create detailed notification message
@@ -1706,49 +1645,77 @@ class XSSScanner:
 
             await self.send_telegram_notification(notification_message)
 
-            if self.config.json_output:
-                self.json_results.append(result)
-            else:
-                # Format the results for text output
-                self.results.extend([
-                    "=" * 50,
-                    "XSS Vulnerability Found:",
-                    "-" * 25,
-                    f"Type: {xss_type.capitalize()}",
-                    f"Domain: {domain}",
-                    f"Parameter: {param}",
-                    f"Payload: {payload}",
-                    f"URL: {url}",
-                    f"Alert Text: {alert_text}",
-                    f"Timestamp: {timestamp}",
-                    "",
-                    "Analysis Details:",
-                    "-" * 17
-                ])
+            # Write results immediately to file
+            try:
+                if self.config.json_output:
+                    # For JSON output, handle the file differently since we need valid JSON structure
+                    if not hasattr(self, '_file_initialized'):
+                        # Initialize the JSON file with an opening bracket
+                        async with aiofiles.open(self.config.output_file, 'w') as f:
+                            await f.write('[\n')
+                        self._file_initialized = True
+                        self._entries_written = 0
+                    else:
+                        # Add a comma if this isn't the first entry
+                        async with aiofiles.open(self.config.output_file, 'a') as f:
+                            if self._entries_written > 0:
+                                await f.write(',\n')
+                    
+                    # Write the current entry
+                    async with aiofiles.open(self.config.output_file, 'a') as f:
+                        await f.write(json.dumps(result, indent=2))
+                    self._entries_written += 1
+                    
+                else:
+                    # For text output, simply append each result
+                    text_result = [
+                        "-------------------------",
+                        "XSS Vulnerability Found:",
+                        "-------------------------",
+                        f"Type: {xss_type.capitalize()}",
+                        f"Domain: {domain}",
+                        f"Parameter: {param}",
+                        f"Payload: {payload}",
+                        f"URL: {url}",
+                        f"Alert Text: {alert_text}",
+                        f"Timestamp: {timestamp}"
+                    ]
 
-                if reflection_details:
-                    self.results.extend([
-                        "Reflection Analysis:",
-                        f"• Direct Reflection: {'Yes' if reflection_details.get('direct_reflection') else 'No'}",
-                        f"• Normalized Reflection: {'Yes' if reflection_details.get('normalized_reflection') else 'No'}"
-                    ])
-                    if reflection_details.get('reflection_contexts'):
-                        self.results.append("• Found in contexts:")
-                        for context_type, context in reflection_details['reflection_contexts']:
-                            self.results.append(f"  - {context_type}")
+                    if reflection_details:
+                        text_result.extend([
+                            "Reflection Analysis:",
+                            f"• Direct Reflection: {'Yes' if reflection_details.get('direct_reflection') else 'No'}",
+                            f"• Normalized Reflection: {'Yes' if reflection_details.get('normalized_reflection') else 'No'}"
+                        ])
+                        if reflection_details.get('reflection_contexts'):
+                            text_result.append("• Found in contexts:")
+                            for context_type, context in reflection_details['reflection_contexts']:
+                                text_result.append(f"  - {context_type}")
 
-                if dom_details:
-                    self.results.extend([
-                        "",
-                        "DOM Analysis:",
-                        f"• Sources Found: {len(dom_details.get('sources', []))}",
-                        f"• Sinks Found: {len(dom_details.get('sinks', []))}",
-                        f"• DOM Mutations: {len(dom_details.get('mutations', []))}"
-                    ])
-                    if dom_details.get('confidence'):
-                        self.results.append(f"• Confidence: {dom_details['confidence']}")
+                    if dom_details:
+                        text_result.extend([
+                            "",
+                            "DOM Analysis:",
+                            f"• Sources Found: {len(dom_details.get('sources', []))}",
+                            f"• Sinks Found: {len(dom_details.get('sinks', []))}",
+                            f"• DOM Mutations: {len(dom_details.get('mutations', []))}"
+                        ])
+                        if dom_details.get('confidence'):
+                            text_result.append(f"• Confidence: {dom_details['confidence']}")
 
-                self.results.extend(["", "=" * 50, ""])
+                    text_result.append("\n")
+                    async with aiofiles.open(self.config.output_file, 'a') as f:
+                        await f.write('\n'.join(text_result))
+
+            except Exception as e:
+                print(f"\n{Fore.RED}Error saving result: {str(e)}{Style.RESET_ALL}")
+                log_error(f"Error saving result: {str(e)}")
+
+        # Store in memory for final stats
+        if self.config.json_output:
+            self.json_results.append(result)
+        else:
+            self.results.extend(text_result)
 
     async def process_parameter_payloads(self, url: str, param: str, progress_bar: tqdm_asyncio) -> None:
         domain = url.split('/')[2]
@@ -2027,8 +1994,13 @@ class XSSScanner:
             if hasattr(self, 'rate_limiter'):
                 self.rate_limiter.reset()
 
-            if self.stats['successful_payloads'] > 0:
-                await self.save_results()
+            # Close the JSON file if it was used
+            if self.config.json_output and hasattr(self, '_file_initialized'):
+                try:
+                    async with aiofiles.open(self.config.output_file, 'a') as f:
+                        await f.write('\n]')
+                except Exception as e:
+                    log_error(f"Error finalizing JSON file: {str(e)}")
 
             if hasattr(self, 'context_pool') and self.context_pool is not None:
                 while not self.context_pool.empty():
