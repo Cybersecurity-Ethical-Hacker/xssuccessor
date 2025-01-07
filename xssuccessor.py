@@ -1468,7 +1468,7 @@ class XSSScanner:
 
     async def validate_alert(self, page: Page, url: str, potential_dom: bool = False) -> Tuple[bool, Optional[str], str]:
         """
-        Enhanced XSS validation that detects actual DOM manipulation and script execution.
+        Enhanced XSS validation that accurately distinguishes between DOM-based and Reflected XSS.
         Returns: (is_vulnerable, alert_text, vulnerability_type)
         """
         alert_triggered = False
@@ -1480,74 +1480,76 @@ class XSSScanner:
                 window._xssMonitor = {
                     scriptExecuted: false,
                     alertTriggered: false,
-                    parameterUsed: false,
-                    domManipulated: false,
-                    manipulationType: null,
-                    parameterValue: null,
-                    executionContext: null,
-                    
-                    // Track where the parameter was used
-                    parameterUsageContext: {
-                        innerHTML: false,
-                        outerHTML: false,
-                        document_write: false,
-                        eval_exec: false
-                    }
+                    eventTriggered: false,
+                    domModification: false,
+                    initialLoad: true,
+                    executionContext: null
                 };
 
-                // Monitor URL parameter access
-                const originalURLSearchParams = window.URLSearchParams;
-                window.URLSearchParams = new Proxy(originalURLSearchParams, {
-                    construct: function(target, args) {
-                        const params = new target(...args);
-                        const originalGet = params.get;
-                        
-                        params.get = function(name) {
-                            const value = originalGet.call(this, name);
-                            if (value) {
-                                window._xssMonitor.parameterUsed = true;
-                                window._xssMonitor.parameterValue = value;
-                            }
-                            return value;
-                        };
-                        return params;
+                // Monitor DOM modifications
+                const observer = new MutationObserver((mutations) => {
+                    if (!window._xssMonitor.initialLoad) {
+                        window._xssMonitor.domModification = true;
                     }
                 });
-
-                // Monitor innerHTML assignments
-                const originalInnerHTMLDescriptor = Object.getOwnPropertyDescriptor(Element.prototype, 'innerHTML');
-                Object.defineProperty(Element.prototype, 'innerHTML', {
-                    set: function(value) {
-                        if (window._xssMonitor.parameterUsed && 
-                            window._xssMonitor.parameterValue && 
-                            value.includes(window._xssMonitor.parameterValue)) {
-                            window._xssMonitor.domManipulated = true;
-                            window._xssMonitor.manipulationType = 'innerHTML';
-                            window._xssMonitor.parameterUsageContext.innerHTML = true;
-                        }
-                        return originalInnerHTMLDescriptor.set.call(this, value);
-                    },
-                    get: originalInnerHTMLDescriptor.get
+                
+                observer.observe(document, {
+                    childList: true,
+                    subtree: true,
+                    attributes: true,
+                    characterData: true
                 });
 
-                // Monitor actual alerts
+                // After initial page load
+                setTimeout(() => {
+                    window._xssMonitor.initialLoad = false;
+                }, 100);
+
+                // Monitor alerts
                 window.alert = new Proxy(window.alert, {
                     apply: function(target, thisArg, args) {
                         window._xssMonitor.alertTriggered = true;
+                        window._xssMonitor.executionContext = 'alert';
                         return target.apply(thisArg, args);
                     }
                 });
 
-                // Monitor eval
+                // Monitor script execution
                 const originalEval = window.eval;
                 window.eval = function(code) {
-                    if (window._xssMonitor.parameterValue && 
-                        code.includes(window._xssMonitor.parameterValue)) {
-                        window._xssMonitor.scriptExecuted = true;
-                        window._xssMonitor.parameterUsageContext.eval_exec = true;
-                    }
+                    window._xssMonitor.scriptExecuted = true;
+                    window._xssMonitor.executionContext = 'eval';
                     return originalEval.apply(this, arguments);
                 };
+
+                const originalFunction = window.Function;
+                window.Function = new Proxy(originalFunction, {
+                    construct: function(target, args) {
+                        window._xssMonitor.scriptExecuted = true;
+                        window._xssMonitor.executionContext = 'Function';
+                        return new target(...args);
+                    }
+                });
+
+                // Monitor events
+                const originalAddEventListener = EventTarget.prototype.addEventListener;
+                EventTarget.prototype.addEventListener = function(type, listener, options) {
+                    window._xssMonitor.eventTriggered = true;
+                    window._xssMonitor.executionContext = 'event-' + type;
+                    return originalAddEventListener.call(this, type, listener, options);
+                };
+
+                // Monitor inline event handlers
+                const eventAttributes = ['onclick', 'onload', 'onerror', 'onmouseover'];
+                eventAttributes.forEach(attr => {
+                    Object.defineProperty(Element.prototype, attr, {
+                        set: function(value) {
+                            window._xssMonitor.eventTriggered = true;
+                            window._xssMonitor.executionContext = 'inline-' + attr;
+                            this.setAttribute(attr, value);
+                        }
+                    });
+                });
             """)
 
             async def handle_dialog(dialog):
@@ -1559,39 +1561,48 @@ class XSSScanner:
             page.on("dialog", handle_dialog)
             
             try:
-                await page.goto(url, timeout=self.config.timeout * 1000, wait_until='domcontentloaded')
+                await page.goto(url, timeout=self.config.timeout * 1000, wait_until='networkidle')
                 await page.wait_for_timeout(self.config.alert_timeout * 1000)
 
-                monitor_status = await page.evaluate("() => window._xssMonitor")
-                
-                # If parameter was used in innerHTML and caused DOM manipulation, it's DOM-based
-                if monitor_status.get('parameterUsed') and monitor_status.get('domManipulated'):
-                    if monitor_status.get('manipulationType') == 'innerHTML':
-                        xss_type = "dom"
-                        # If it also triggered an alert, mark it
-                        if alert_triggered:
-                            alert_text = alert_text or "DOM Manipulation Detected"
-                        else:
-                            alert_triggered = True
-                            alert_text = "DOM Manipulation Detected"
-                # Otherwise if got an alert, it's probably reflected
-                elif alert_triggered:
+                monitor_status = await page.evaluate("""() => {
+                    // Check for DOM source patterns
+                    const hasURLParam = Boolean(
+                        document.querySelector('script:not([src])')?.textContent.match(/URLSearchParams|location\\.search|window\\.location/)
+                    );
+                    
+                    // Check for innerHTML assignments
+                    const hasInnerHTML = Boolean(
+                        document.querySelector('script:not([src])')?.textContent.match(/\\.innerHTML\\s*=/)
+                    );
+                    
+                    // Check if we have both URL parameter access and DOM modification
+                    const isDOMXSS = hasURLParam && hasInnerHTML;
+                    
+                    return {
+                        ...window._xssMonitor,
+                        isDOMXSS,
+                        hasURLParam,
+                        hasInnerHTML
+                    };
+                }""")
+
+                # Check for DOM-based XSS
+                if monitor_status.get('isDOMXSS') or (potential_dom and monitor_status.get('domModification')):
+                    xss_type = "dom"
+                    if not alert_triggered and monitor_status.get('scriptExecuted'):
+                        alert_triggered = True
+                        alert_text = "DOM XSS Detected via Dynamic Modification"
+                # Only check for Reflected XSS if we don't have DOM XSS indicators
+                elif alert_triggered and not monitor_status.get('isDOMXSS'):
                     xss_type = "reflected"
-
-                return alert_triggered, alert_text, xss_type
-
-            except TimeoutError:
-                logging.debug(f"Page load timeout for URL: {url}")
-                return False, None, "none"
                 
+                return alert_triggered, alert_text, xss_type
             except Exception as e:
                 logging.error(f"Page navigation error: {str(e)}")
                 return False, None, "none"
-
         except Exception as e:
             logging.error(f"Validation error: {str(e)}")
             return False, None, "none"
-
         finally:
             try:
                 page.remove_listener("dialog", handle_dialog)
@@ -1648,7 +1659,7 @@ class XSSScanner:
             # Write results immediately to file
             try:
                 if self.config.json_output:
-                    # For JSON output, handle the file differently since we need valid JSON structure
+                    # For JSON output, handle the file differently since a valid JSON structure needed
                     if not hasattr(self, '_file_initialized'):
                         # Initialize the JSON file with an opening bracket
                         async with aiofiles.open(self.config.output_file, 'w') as f:
