@@ -35,7 +35,7 @@
 
 **2. Install Playwright and the Chromium browser:**
 
-Kali Linux includes most Python dependencies by default. However, you must install the Playwright Chromium browser binary. **Always use `python -m playwright`** do NOT install `node-playwright` via apt, as that is a different Node.js package and will cause conflicts.
+Kali Linux includes most Python dependencies by default. However, you must install the Playwright Chromium browser binary. **Always use `python -m playwright`** — do NOT install `node-playwright` via apt, as that is a different Node.js package and will cause conflicts.
 
    ```bash
    pip install --break-system-packages playwright
@@ -231,7 +231,9 @@ https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates
 Example: TELEGRAM_CHAT_ID = "your_chat_id_here"
 ```
 
-🛠️ Update XSSuccessor
+5.🛠️ Configure the Telegram Variables in `xssuccessor.py`
+
+- Open `xssuccessor.py` and update the Telegram configuration constants at the top of the file:
 
 ```bash
 TELEGRAM_BOT_TOKEN = "your_bot_token_here ex: 7926311985:ABH04MhskQg-HzSgYrqQVGFz6q1I2AgykNA"
@@ -239,7 +241,7 @@ TELEGRAM_CHAT_ID = "your_chat_id_here ex: -12345678"
 TELEGRAM_NOTIFICATIONS_ENABLED = True
 ```
 
-🚀 Test the Setup
+6.🚀 Test the Setup
 
 Trigger a test notification from XSSuccessor to ensure everything is working correctly.
 
@@ -318,7 +320,7 @@ If you discover any vulnerabilities using this tool, report them responsibly to 
 Ensure that your use of this tool complies with all applicable local, national, and international laws and regulations.
 
 ## 📚 Learn and Grow
-Whether you're a budding penetration tester aiming to enhance your skills or a seasoned professional seeking to uncover and mitigate security issues, LFier is here to support your journey in building a safer digital landscape.
+Whether you're a budding penetration tester aiming to enhance your skills or a seasoned professional seeking to uncover and mitigate security issues, XSSuccessor is here to support your journey in building a safer digital landscape.
 
 > [!NOTE]
 > Let’s build a safer web together! 🌐🔐
