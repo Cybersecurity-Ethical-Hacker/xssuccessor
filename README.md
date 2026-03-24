@@ -26,24 +26,34 @@
 
 ## 📥 Kali Linux Installation - (Recommended)
 
-**Clone the repository:**
+**1. Clone the repository:**
 
    ```bash
    git clone https://github.com/Cybersecurity-Ethical-Hacker/xssuccessor.git
    cd xssuccessor
    ```
 
-**Kali Linux already includes the following dependencies by default. However, if needed, you can install the required dependencies manually using pipx (Kali 2024.4+):**
+**2. Install Playwright and the Chromium browser:**
+
+Kali Linux includes most Python dependencies by default. However, you must install the Playwright Chromium browser binary. **Always use `python -m playwright`** — do NOT install `node-playwright` via apt, as that is a different Node.js package and will cause conflicts.
+
+   ```bash
+   pip install --break-system-packages playwright
+   python -m playwright install chromium
+   ```
+
+**3. Install remaining dependencies (if needed):**
+
+Kali 2024.4+ includes most of these by default. If any are missing, install them with pipx:
 
    ```bash
    pipx install aiofiles
    pipx install aiohttp
    pipx install colorama
    pipx install tqdm
-   pipx install packaging
    ```
 
-**For older Kali Linux versions ensure that you have Python 3.8+ installed. Install the required dependencies using pip:**
+For older Kali versions, install all dependencies at once:
 
    ```bash
    pip install -r requirements.txt
@@ -51,99 +61,67 @@
 
 ## 📥 Other Linux Distributions Installation
 
-**For other Linux Distributions you may need to install manually the Playwright:**
+**1. Install Playwright and the Chromium browser:**
 
-**Install Playwright:**
    ```bash
-pip install playwright
+   pip install playwright
+   python -m playwright install chromium
    ```
 
-**Install the required Playwright browsers:**
+If the browser install fails with missing system libraries, run:
 
    ```bash
-   playwright install
+   sudo python -m playwright install-deps
    ```
 
-   ```bash
-   sudo playwright install-deps
-   ```
-
-if it fails run:
-
-   ```bash
-   sudo apt-get install libevent-2.1-7 libavif16
-   ```      
-
-**Clone the repository:**
+**2. Clone the repository:**
 
    ```bash
    git clone https://github.com/Cybersecurity-Ethical-Hacker/xssuccessor.git
    cd xssuccessor
    ```
 
-**Ensure you have Python 3.8+ installed. Install the required dependencies using pip:**
+**3. Install the required dependencies:**
+
+Ensure you have Python 3.8+ installed:
 
    ```bash
    pip install -r requirements.txt
    ```
 
-## 📥 Install using Virtual Environment:
+## 📥 Install using Virtual Environment
 
-**Create and activate a virtual environment (optional but recommended):**
+Using a virtual environment avoids conflicts with system packages and is the recommended approach on most distributions.
+
+**1. Create and activate a virtual environment:**
 
    ```bash
    python3 -m venv venv
    source venv/bin/activate
    ```
 
-**Upgrade pip (Optional but Recommended):**
+**2. Install Playwright and the Chromium browser:**
 
    ```bash
-   pip install --upgrade pip
+   pip install playwright
+   python -m playwright install chromium
    ```
 
-**Install Playwright:**
+If the browser install fails with missing system libraries, run:
 
    ```bash
-pip install playwright
+   sudo python -m playwright install-deps
    ```
 
-**Install the required Playwright browsers:**
-
-   ```bash
-   playwright install
-   ```
-
-   ```bash
-   sudo playwright install-deps
-   ```
-
-if it fails run:
-
-   ```bash
-   sudo apt-get install libevent-2.1-7 libavif16
-   ``` 
-
-**Clone the repository:**
+**3. Clone the repository and install dependencies:**
 
    ```bash
    git clone https://github.com/Cybersecurity-Ethical-Hacker/xssuccessor.git
    cd xssuccessor
-   ```
-
-**Ensure you have Python 3.8+ installed. Install the required dependencies using pip:**
-
-   ```bash
    pip install -r requirements.txt
    ```
 
-❗ Important: Always Activate The Virtual Environment Before Use
-Whenever you:
-
-- Open a New Terminal Window
-- Restart Your Computer
-  
-You must activate the virtual environment before running XSSuccessor to ensure that all dependencies are correctly loaded.
+> ❗ **Important:** Always activate the virtual environment before running XSSuccessor. You must run `source venv/bin/activate` every time you open a new terminal window or restart your computer.
 
 
 ## 🧩 **URLs with Parameters - Kali Linux**
@@ -283,6 +261,27 @@ If you encounter problems while using **XSSuccessor**, consider the following co
 2. **Overly Large Payloads List**
    - **Issue:** Utilizing an excessively large payloads list can overwhelm the tool, resulting in slow performance or failures.
    - **Solution:** Optimize your payloads list by removing redundant or unnecessary entries.
+
+3. **Playwright Browsers Not Installed**
+   - **Issue:** The scan starts but immediately fails with `Executable doesn't exist` or `BrowserType.launch` errors, and completes with zero results.
+   - **Solution:** The Playwright Python package is installed, but the Chromium browser binary is missing. Run:
+     ```bash
+     python -m playwright install chromium
+     ```
+     On Linux, you may also need system-level dependencies:
+     ```bash
+     sudo python -m playwright install-deps
+     ```
+
+4. **Wrong Playwright Package Installed (Node.js vs Python)**
+   - **Issue:** Running `playwright install` or `python -m playwright install chromium` fails with `Cannot find module '/usr/share/nodejs/playwright/cli.js'` or `KeyError: 'deviceDescriptors'`.
+   - **Solution:** The system has `node-playwright` (a Node.js package) installed, which conflicts with the Python Playwright. Remove it and reinstall the correct package:
+     ```bash
+     sudo apt remove node-playwright
+     pip install --force-reinstall playwright
+     python -m playwright install chromium
+     ```
+     **Important:** Always use `python -m playwright install` instead of the bare `playwright install` command to ensure the correct Python package is used.
 
 **Recommendations:**
 - **Start Simple:** Begin with a moderate number of workers and a streamlined payloads list to ensure smooth operation.

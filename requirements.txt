@@ -1,6 +1,5 @@
 aiofiles>=0.8.0
 aiohttp>=3.8.0
-packaging>=20.0
 colorama>=0.4.0
 tqdm>=4.62.0
 brotli>=1.0.9

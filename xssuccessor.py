@@ -3,7 +3,6 @@
 import os
 import sys
 import time
-import base64
 import atexit
 import gc
 import html
@@ -15,12 +14,10 @@ import json
 import logging
 import asyncio
 import argparse
-from importlib.metadata import version as get_version, PackageNotFoundError
 import platform
 import aiofiles
 import re
 import aiohttp
-from packaging.version import parse as parse_version
 from datetime import datetime
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse, quote
 from pathlib import Path
@@ -50,7 +47,7 @@ TELEGRAM_BOT_TOKEN = ""
 TELEGRAM_CHAT_ID = ""
 TELEGRAM_NOTIFICATIONS_ENABLED = False
 
-VERSION = "0.0.1"
+VERSION = "0.0.2"
 GITHUB_REPOSITORY: str = "Cybersecurity-Ethical-Hacker/xssuccessor"
 GITHUB_URL: str = f"https://github.com/{GITHUB_REPOSITORY}"
 
@@ -196,35 +193,38 @@ class DOMXSSScanner:
             'confidence': 'high' if (has_sources and has_sinks) else 'medium'
         }
 
+    DOM_SOURCE_RE = re.compile(
+        r'URLSearchParams|params\.get|location\.search|location\.hash|'
+        r'document\.URL|document\.documentURI|document\.referrer|'
+        r'window\.name|window\.location|location\.href|'
+        r'document\.cookie|postMessage|MessageEvent',
+        re.IGNORECASE
+    )
+    DOM_SINK_RE = re.compile(
+        r'\.innerHTML\s*=|\.outerHTML\s*=|document\.write\w*\s*\(|'
+        r'eval\s*\(|insertAdjacentHTML\s*\(|'
+        r'createElement\s*\(\s*[\'"](?:script|iframe|svg)[\'"]|'
+        r'\.html\s*\(|\.append\s*\(|\.prepend\s*\(|\.after\s*\(|\.before\s*\(|'
+        r'\.replaceWith\s*\(|\.wrap\s*\(|\.wrapAll\s*\(|\$\s*\(|'
+        r'\.globalEval\s*\(|\.parseHTML\s*\(|'
+        r'document\.location\s*=|location\.assign\s*\(|location\.replace\s*\(|'
+        r'\.src\s*=|\.href\s*=|\.action\s*=',
+        re.IGNORECASE
+    )
+
     async def quick_dom_check(self, response_text: str) -> bool:
         """
-        Quick check for DOM-based XSS potential,
-        plus detection of createElement, appendChild, on[a-zA-Z]+=, etc.
+        Quick check for DOM-based XSS potential by looking for source-to-sink
+        flows within script blocks. Covers native DOM APIs, jQuery/framework
+        sinks, and location assignment patterns.
         """
-        # Check for suspicious DOM-manipulating functions
-        if re.search(r'createElement\s*\(\s*[\'"](?:script|iframe|svg)[\'"]', response_text, re.IGNORECASE):
-            return True
-        if re.search(r'appendChild\s*\(', response_text, re.IGNORECASE):
-            return True
-        if re.search(r'insertAdjacentHTML\s*\(', response_text, re.IGNORECASE):
-            return True
-        # Check for on-event attributes
-        if re.search(r'on[a-zA-Z]+\s*=\s*', response_text, re.IGNORECASE):
-            return True
-
         script_tags = re.findall(r'<script[^>]*>(.*?)</script>', response_text, re.DOTALL)
         for script in script_tags:
-            has_param_access = re.search(r'URLSearchParams|params\.get|location\.search', script, re.IGNORECASE)
-            has_dom_mod = re.search(r'innerHTML\s*=|document\.write|eval', script, re.IGNORECASE)
-
-            if has_param_access and has_dom_mod:
+            if not self.DOM_SOURCE_RE.search(script):
+                continue
+            if self.DOM_SINK_RE.search(script):
                 return True
 
-            if re.search(r'getElementById\([^)]+\)\.innerHTML\s*=', script, re.IGNORECASE):
-                return True
-
-            if 'window.onload' in script and 'innerHTML' in script:
-                return True
         return False
 
 class ReflectionAnalyzer:
@@ -258,9 +258,9 @@ class ReflectionAnalyzer:
                         try:
                             decoded = decoder(match.group(0))
                             normalized = normalized.replace(match.group(0), decoded)
-                        except:
+                        except (ValueError, UnicodeDecodeError, OverflowError):
                             continue
-                except:
+                except (ValueError, UnicodeDecodeError, OverflowError):
                     continue
         return normalized
 
@@ -305,103 +305,10 @@ class ReflectionAnalyzer:
             'confidence': 'high' if direct_reflection else 'medium'
         }
 
-class VulnerabilityVerifier:
-    def __init__(self, dom_scanner: DOMXSSScanner, reflection_analyzer: ReflectionAnalyzer):
-        self.dom_scanner = dom_scanner
-        self.reflection_analyzer = reflection_analyzer
-
-    async def verify_vulnerability(self, page: Page, content: str, payload: str, url: str) -> Dict[str, Any]:
-        """
-        Comprehensive verification of XSS vulnerability with certificate error handling.
-        Returns detailed analysis results.
-        """
-        # Configure page to ignore certificate errors
-        context = page.context
-        await context.clear_cookies()
-        
-        # Set extra headers to handle SSL
-        await context.set_extra_http_headers({
-            "Accept": "*/*",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Connection": "keep-alive",
-            "Upgrade-Insecure-Requests": "1"
-        })
-        
-        # Check for DOM-based vulnerability
-        dom_vulnerable, dom_details = await self.dom_scanner.check_dom_vulnerability(content, payload)
-        
-        # Check for reflection-based vulnerability
-        is_reflected, reflection_details = await self.reflection_analyzer.analyze_reflection(content, payload)
-
-        # Determine the vulnerability type
-        vuln_types = []
-        if dom_vulnerable:
-            vuln_types.append('dom')
-        if is_reflected:
-            vuln_types.append('reflected')
-
-        vuln_type = 'hybrid' if len(vuln_types) > 1 else (vuln_types[0] if vuln_types else 'none')
-        
-        # Enhanced alert detection with context tracking
-        alert_details = await self._check_for_alert(page, url)
-
-        return {
-            'vulnerable': bool(vuln_types) and alert_details['alert_triggered'],
-            'vulnerability_type': vuln_type,
-            'dom_analysis': dom_details,
-            'reflection_analysis': reflection_details,
-            'alert_details': alert_details,
-            'url': url,
-            'payload': payload
-        }
-
-    async def _check_for_alert(self, page: Page, url: str) -> Dict[str, Any]:
-        """
-        Enhanced alert detection with better context tracking.
-        """
-        alert_triggered = False
-        alert_text = None
-        execution_context = None
-
-        async def handle_dialog(dialog):
-            nonlocal alert_triggered, alert_text, execution_context
-            alert_triggered = True
-            alert_text = dialog.message
-            try:
-                execution_context = await page.evaluate('() => document.currentScript?.src || "inline"')
-            except:
-                execution_context = "unknown"
-            await dialog.accept()
-
-        try:
-            page.on("dialog", handle_dialog)
-            await page.goto(url, wait_until='networkidle')
-            await page.wait_for_timeout(3000)  # Adjust timeout as needed
-
-            # Check for DOM modifications
-            dom_modified = await page.evaluate("""() => {
-                return {
-                    innerHTML_modified: window._domModified || false,
-                    script_executed: window._scriptExecuted || false,
-                    event_triggered: window._eventTriggered || false
-                }
-            }""")
-
-            return {
-                'alert_triggered': alert_triggered,
-                'alert_text': alert_text,
-                'execution_context': execution_context,
-                'dom_modifications': dom_modified
-            }
-
-        finally:
-            page.remove_listener("dialog", handle_dialog)
-
 class CustomStderr:
     def __init__(self, error_log_path):
         self.error_log = open(error_log_path, 'a')
         self.stderr = sys.stderr
-        self.isatty = getattr(sys.stderr, 'isatty', lambda: False)
 
     def write(self, message):
         if any(pattern in message for pattern in [
@@ -435,7 +342,7 @@ def cleanup_stderr():
     try:
         if hasattr(sys.stderr, 'close'):
             sys.stderr.close()
-    except:
+    except (OSError, AttributeError):
         pass
 
 atexit.register(cleanup_stderr)
@@ -471,7 +378,7 @@ def cleanup_loop():
                 task.cancel()
             loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
             loop.close()
-    except:
+    except (RuntimeError, OSError):
         pass
 
 def cleanup_resources():
@@ -480,52 +387,11 @@ def cleanup_resources():
 atexit.register(cleanup_resources)
 atexit.register(cleanup_loop)
 
-loop = asyncio.new_event_loop()
-loop.set_exception_handler(custom_exception_handler)
-asyncio.set_event_loop(loop)
-
 def log_error(message: str, exc: Optional[Exception] = None) -> None:
     if exc:
         logging.error(message, exc_info=True)
     else:
         logging.error(message)
-
-def get_playwright_version() -> str:
-    try:
-        import playwright
-        version = getattr(playwright, '__version__', None)
-        if not version:
-            try:
-                version = get_version('playwright')
-            except PackageNotFoundError:
-                version = "unknown"
-        if version == "0.0.0":
-            version = "0.0.0 (Normal on some Linux distributions)"
-        return version
-    except Exception as e:
-        return f"error retrieving version: {e}"
-
-def check_playwright_version() -> str:
-    playwright_version = get_playwright_version()
-    try:
-        if playwright_version == "0.0.0" or playwright_version == "0.0.0 (Normal on some Linux distributions)":
-            return playwright_version
-        required_version = '1.35.0'
-        if parse_version(playwright_version) < parse_version(required_version):
-            print(f"{Fore.RED}Error: This tool requires Playwright >= {required_version}")
-            print(f"Current version: {playwright_version}")
-            print(f"Please upgrade: pip install -U playwright{Style.RESET_ALL}")
-            sys.exit(1)
-    except Exception as e:
-        if "not installed" in str(e):
-            print(f"{Fore.RED}Error: Playwright is not installed")
-            print("Please install: pip install playwright>=1.35.0")
-            print(f"Then run: playwright install chromium{Style.RESET_ALL}")
-            sys.exit(1)
-        else:
-            print(f"{Fore.RED}Error checking Playwright version: {e}{Style.RESET_ALL}")
-            sys.exit(1)
-    return playwright_version
 
 class TimeoutFilter(logging.Filter):
     TIMEOUT_PATTERNS = [
@@ -603,7 +469,7 @@ class Updater:
             for line in result.stdout.split('\n'):
                 if 'HEAD branch:' in line:
                     return line.split(':')[1].strip()
-        except:
+        except (subprocess.SubprocessError, OSError):
             pass
         return 'main'
 
@@ -625,7 +491,7 @@ class AutoUpdater(Updater):
                     cwd=self.repo_path
                 )
             return True
-        except:
+        except (subprocess.SubprocessError, OSError):
             return False
 
     def _get_local_version(self) -> str:
@@ -645,7 +511,7 @@ class AutoUpdater(Updater):
             if result.returncode == 0:
                 return result.stdout.strip().lstrip('v')
             return self.current_version
-        except:
+        except (subprocess.SubprocessError, OSError):
             return self.current_version
 
     def _detect_default_branch(self) -> Optional[str]:
@@ -667,7 +533,7 @@ class AutoUpdater(Updater):
                     cwd=self.repo_path
                 )
                 return result.stdout.strip() or 'main'
-        except:
+        except (subprocess.SubprocessError, OSError):
             return 'main'
 
     def _get_remote_changes(self) -> Tuple[bool, str]:
@@ -733,7 +599,7 @@ class AutoUpdater(Updater):
                     cwd=self.repo_path
                 )
             return result.stdout.strip()
-        except:
+        except (subprocess.SubprocessError, OSError):
             return None
 
     def _perform_update(self) -> Dict[str, Any]:
@@ -1047,7 +913,7 @@ Git is not installed. To install Git:
 
 After installation, restart your terminal.
 """
-            except:
+            except (IOError, OSError):
                 pass
             return """
 Git is not installed. To install Git on Linux:
@@ -1073,7 +939,7 @@ https://git-scm.com/downloads
         return True
 
 class Config:
-    def __init__(self, args: argparse.Namespace, playwright_version: str) -> None:
+    def __init__(self, args: argparse.Namespace) -> None:
         self.github_url = "https://github.com/Cybersecurity-Ethical-Hacker/xssuccessor"
         self.github_repository = "Cybersecurity-Ethical-Hacker/xssuccessor"
         updater = AutoUpdater()
@@ -1086,8 +952,6 @@ class Config:
         self.max_workers: int = args.workers
         self.batch_size: int = min(args.batch_size, PAYLOADS_BATCH_SIZE)
         self.rate_limit: int = args.rate_limit
-        self.playwright_version: str = playwright_version
-
         git_handler = GitHandler()
         repo_status, repo_message = git_handler.check_repo_status()
         self.version_info: VersionInfo = self._check_version()
@@ -1170,15 +1034,101 @@ class Config:
             else:
                 self.output_file = self.base_dir / f"xss_results_{timestamp}.txt"
 
+XSS_MONITOR_SCRIPT = """
+    window._xssMonitor = {
+        scriptExecuted: false,
+        alertTriggered: false,
+        eventTriggered: false,
+        domModification: false,
+        initialLoad: true,
+        executionContext: null
+    };
+
+    const observer = new MutationObserver((mutations) => {
+        if (!window._xssMonitor.initialLoad) {
+            window._xssMonitor.domModification = true;
+        }
+    });
+
+    observer.observe(document, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        characterData: true
+    });
+
+    setTimeout(() => {
+        window._xssMonitor.initialLoad = false;
+    }, 100);
+
+    window.alert = new Proxy(window.alert, {
+        apply: function(target, thisArg, args) {
+            window._xssMonitor.alertTriggered = true;
+            window._xssMonitor.executionContext = 'alert';
+            return target.apply(thisArg, args);
+        }
+    });
+
+    window.confirm = new Proxy(window.confirm, {
+        apply: function(target, thisArg, args) {
+            window._xssMonitor.alertTriggered = true;
+            window._xssMonitor.executionContext = 'confirm';
+            return target.apply(thisArg, args);
+        }
+    });
+
+    window.prompt = new Proxy(window.prompt, {
+        apply: function(target, thisArg, args) {
+            window._xssMonitor.alertTriggered = true;
+            window._xssMonitor.executionContext = 'prompt';
+            return target.apply(thisArg, args);
+        }
+    });
+
+    const originalEval = window.eval;
+    window.eval = function(code) {
+        window._xssMonitor.scriptExecuted = true;
+        window._xssMonitor.executionContext = 'eval';
+        return originalEval.apply(this, arguments);
+    };
+
+    const originalFunction = window.Function;
+    window.Function = new Proxy(originalFunction, {
+        construct: function(target, args) {
+            window._xssMonitor.scriptExecuted = true;
+            window._xssMonitor.executionContext = 'Function';
+            return new target(...args);
+        }
+    });
+
+    const originalAddEventListener = EventTarget.prototype.addEventListener;
+    EventTarget.prototype.addEventListener = function(type, listener, options) {
+        window._xssMonitor.eventTriggered = true;
+        window._xssMonitor.executionContext = 'event-' + type;
+        return originalAddEventListener.call(this, type, listener, options);
+    };
+
+    const eventAttributes = ['onclick', 'onload', 'onerror', 'onmouseover'];
+    eventAttributes.forEach(attr => {
+        Object.defineProperty(Element.prototype, attr, {
+            set: function(value) {
+                window._xssMonitor.eventTriggered = true;
+                window._xssMonitor.executionContext = 'inline-' + attr;
+                this.setAttribute(attr, value);
+            }
+        });
+    });
+"""
+
 class XSSScanner:
     async def send_telegram_notification(self, message: str) -> None:
         if not TELEGRAM_NOTIFICATIONS_ENABLED or not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
             return
         try:
             telegram_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-            message = (message.replace('<', '&lt;')
+            message = (message.replace('&', '&amp;')
+                            .replace('<', '&lt;')
                             .replace('>', '&gt;')
-                            .replace('&', '&amp;')
                             .replace('"', '&quot;')
                             .replace("'", '&#39;'))
             params = {
@@ -1233,13 +1183,8 @@ class XSSScanner:
             'failed_payloads': 0,
             'errors': 0
         }
-        # Initialize the enhanced detection components
         self.dom_scanner = DOMXSSScanner()
         self.reflection_analyzer = ReflectionAnalyzer()
-        self.vulnerability_verifier = VulnerabilityVerifier(
-            dom_scanner=self.dom_scanner,
-            reflection_analyzer=self.reflection_analyzer
-        )
         self.error_types: Dict[str, int] = {}
         self.start_time: Optional[float] = None
         self.output_lock: asyncio.Lock = asyncio.Lock()
@@ -1256,6 +1201,7 @@ class XSSScanner:
         self.rate_limiter = RateLimiter(config.rate_limit)
         self.progress_bar: Optional[tqdm_asyncio] = None
         self.browser: Optional[Browser] = None
+        self._playwright = None
         self.context_pool: asyncio.Queue = asyncio.Queue()
         self.http_session: Optional[aiohttp.ClientSession] = None
 
@@ -1287,8 +1233,8 @@ class XSSScanner:
 
     async def initialize_browser(self) -> None:
         try:
-            playwright_obj = await async_playwright().start()
-            self.browser = await playwright_obj.chromium.launch(
+            self._playwright = await async_playwright().start()
+            self.browser = await self._playwright.chromium.launch(
                 headless=True,
                 args=['--disable-web-security', '--ignore-certificate-errors']
             )
@@ -1297,6 +1243,7 @@ class XSSScanner:
                     bypass_csp=True,
                     ignore_https_errors=True
                 )
+                await context.add_init_script(XSS_MONITOR_SCRIPT)
                 page = await context.new_page()
                 await self.context_pool.put((context, page))
         except Exception as e:
@@ -1307,6 +1254,10 @@ class XSSScanner:
         return await self.context_pool.get()
 
     async def release_context(self, context: BrowserContext, page: Page) -> None:
+        try:
+            await page.goto('about:blank', timeout=2000)
+        except Exception:
+            pass
         await self.context_pool.put((context, page))
 
     def get_parameter_context(self, url: str, param: str) -> str:
@@ -1343,24 +1294,35 @@ class XSSScanner:
             injected_urls.append((new_url, param_name))
         return injected_urls
 
-    # REFINE COMPLEX REFLECTION CHECK
+    async def _fetch_with_retry(self, url: str, max_retries: int = 1) -> Optional[str]:
+        """Fetch URL content with a single retry on transient failures. Returns None on server errors."""
+        for attempt in range(max_retries + 1):
+            try:
+                async with self.http_session.get(url) as response:
+                    if response.status >= 500:
+                        return None
+                    return await response.text()
+            except (aiohttp.ClientError, asyncio.TimeoutError):
+                if attempt < max_retries:
+                    await asyncio.sleep(0.5)
+                    continue
+                return None
+
     async def _check_complex_reflection(self, content: str, payload: str) -> bool:
         """
-        Enhanced reflection check that safely handles escape sequences and various injection patterns.
-        Returns True if a reflection is detected, False otherwise.
+        Payload-aware reflection check. Every pattern match is gated on verifying
+        that a distinctive part of the payload actually appears in the matched region,
+        preventing false positives from pre-existing page content.
         """
-        # Check for direct variations first
         encoded_variations = self._get_encoded_variations(payload)
         if any(var in content for var in encoded_variations):
             return True
 
-        # Fuzzy check ignoring whitespace and newlines
         fuzzy_payload = payload.replace('\n', '').replace('\r', '').replace(' ', '')
         fuzzy_content = content.replace('\n', '').replace('\r', '').replace(' ', '')
         if fuzzy_payload in fuzzy_content:
             return True
 
-        # Handle escape sequences safely
         if re.search(r'(\\x[0-9a-fA-F]{2}|\\u[0-9a-fA-F]{4}|&#x[0-9a-fA-F]+;)', payload, re.IGNORECASE):
             try:
                 def decode_hex(match):
@@ -1378,9 +1340,9 @@ class XSSScanner:
                             hex_val = hex_str[3:].rstrip(';')
                             if all(c in '0123456789abcdefABCDEF' for c in hex_val):
                                 return chr(int(hex_val, 16))
-                        return match.group(0)  # Return original if can't decode
-                    except:
-                        return match.group(0)  # Return original on any error
+                        return match.group(0)
+                    except (ValueError, UnicodeDecodeError):
+                        return match.group(0)
 
                 escaped_payload = re.sub(
                     r'((?:\\x[0-9a-fA-F]{2}|\\u[0-9a-fA-F]{4}|&#x[0-9a-fA-F]+;))',
@@ -1390,65 +1352,69 @@ class XSSScanner:
                 if escaped_payload in content:
                     return True
             except Exception:
-                pass  # Silently continue if decoding fails
+                pass
 
-        # Detect partial merges like <SvgOnLoad=, <DivOnError=, etc.
-        if re.search(r'<\w+on(?:load|error|click|mouseover)\s*=', content, re.IGNORECASE):
-            return True
+        payload_lower = payload.lower()
+        content_lower = content.lower()
 
-        # SVG pattern checks
-        if 'svg' in payload.lower():
+        payload_tags = {t.lower() for t in re.findall(r'<\s*(\w+)', payload)}
+
+        if 'svg' in payload_tags and 'svg' in content_lower:
             if any(pattern.search(content) for pattern in self.SVG_PATTERNS):
                 return True
 
-        # JavaScript protocol checks
-        if 'javascript:' in payload.lower():
-            if any(pattern.search(content) for pattern in self.JS_PATTERNS):
+        if 'javascript:' in payload_lower:
+            canary_fns = {'alert', 'confirm', 'prompt', 'eval'}
+            payload_fns = {fn for fn in canary_fns if fn in payload_lower}
+            if any(fn in content_lower for fn in payload_fns):
+                if any(pattern.search(content) for pattern in self.JS_PATTERNS):
+                    return True
+
+        payload_handlers = re.findall(r'(on\w+)\s*=', payload, re.IGNORECASE)
+        if payload_handlers:
+            for handler in payload_handlers:
+                if handler.lower() in content_lower:
+                    if any(pattern.search(content) for pattern in self.EVENT_PATTERNS):
+                        return True
+
+        if 'data:' in payload_lower:
+            data_prefix = re.search(r'data:[a-z]+/[a-z+\-]+', payload_lower)
+            if data_prefix and data_prefix.group() in content_lower:
                 return True
 
-        # Event handler pattern checks
-        if any(evt in payload.lower() for evt in ['onload', 'onerror', 'onmouseover', 'onclick']):
-            if any(pattern.search(content) for pattern in self.EVENT_PATTERNS):
-                return True
+        if self._check_structural_tokens(content_lower, payload_lower, payload_tags, payload_handlers):
+            return True
 
-        # Data URI scheme checks
-        if 'data:' in payload.lower():
-            data_patterns = [
-                re.compile(r'data:text/html.*,', re.IGNORECASE),
-                re.compile(r'data:image/svg.*,', re.IGNORECASE),
-                re.compile(r'data:application/x-.*,', re.IGNORECASE)
-            ]
-            if any(pattern.search(content) for pattern in data_patterns):
-                return True
+        return False
 
-        # Expression checks
-        if 'expression' in payload.lower():
-            expr_patterns = [
-                re.compile(r'expression\s*\(', re.IGNORECASE),
-                re.compile(r'expr\s*\(', re.IGNORECASE)
-            ]
-            if any(pattern.search(content) for pattern in expr_patterns):
-                return True
+    def _check_structural_tokens(self, content_lower: str, payload_lower: str,
+                                  payload_tags: set, payload_handlers: list) -> bool:
+        """
+        Detect server-transformed reflections by checking if the payload's key
+        structural tokens (tag names, event handlers, JS functions) individually
+        appear in the response. Requires at least a tag AND a sink token to match,
+        preventing false positives from pages that just happen to contain common words.
+        """
+        xss_tags = {'script', 'svg', 'img', 'iframe', 'object', 'embed',
+                     'video', 'audio', 'body', 'input', 'details', 'math'}
+        reflected_tags = payload_tags & xss_tags
+        has_tag = any(f'<{tag}' in content_lower or f'&lt;{tag}' in content_lower
+                      for tag in reflected_tags)
+        if not has_tag and not payload_handlers:
+            return False
 
-        # Template literal and concatenation checks
-        if any(char in payload for char in ['`', '+', '${']): 
-            concat_patterns = [
-                re.compile(r'\$\{.*\}', re.DOTALL),
-                re.compile(r'["\'][\s+]*\+[\s+]*["\']'),
-                re.compile(r'`[^`]*\$\{[^}]*\}[^`]*`')
-            ]
-            if any(pattern.search(content) for pattern in concat_patterns):
-                return True
+        sink_fns = {'alert', 'confirm', 'prompt', 'eval', 'fetch',
+                     'xmlhttprequest', 'document.cookie', 'document.domain'}
+        payload_sinks = {fn for fn in sink_fns if fn in payload_lower}
+        has_sink = any(fn in content_lower for fn in payload_sinks)
 
-        # Constructor checks
-        if 'constructor' in payload:
-            constructor_patterns = [
-                re.compile(r'constructor\s*\('),
-                re.compile(r'constructor\s*\['),
-                re.compile(r'\[constructor\]')
-            ]
-            if any(pattern.search(content) for pattern in constructor_patterns):
-                return True
+        handler_lower = [h.lower() for h in payload_handlers]
+        has_handler = any(h in content_lower for h in handler_lower)
+
+        if has_tag and (has_sink or has_handler):
+            return True
+        if has_handler and has_sink:
+            return True
 
         return False
 
@@ -1460,8 +1426,6 @@ class XSSScanner:
         variations.append(html.escape(payload, quote=False))
         variations.append(urllib.parse.quote(urllib.parse.quote(payload)))
         variations.append(html.escape(html.escape(payload)))
-        variations.append(payload.encode('unicode-escape').decode())
-        variations.append(base64.b64encode(payload.encode()).decode())
         variations.append(''.join([f'&#{ord(c)};' for c in payload]))
         variations.append(''.join([f'&#x{ord(c):x};' for c in payload]))
         return variations
@@ -1474,140 +1438,91 @@ class XSSScanner:
         alert_triggered = False
         alert_text = None
         xss_type = "none"
-        
+
+        async def handle_dialog(dialog):
+            nonlocal alert_triggered, alert_text
+            alert_triggered = True
+            alert_text = dialog.message
+            await dialog.accept()
+
+        page.on("dialog", handle_dialog)
+
         try:
-            await page.add_init_script("""
-                window._xssMonitor = {
-                    scriptExecuted: false,
-                    alertTriggered: false,
-                    eventTriggered: false,
-                    domModification: false,
-                    initialLoad: true,
-                    executionContext: null
+            await page.goto(url, timeout=self.config.timeout * 1000, wait_until='domcontentloaded')
+            await page.wait_for_timeout(self.config.alert_timeout * 1000)
+
+            if not alert_triggered:
+                try:
+                    await page.evaluate("""() => {
+                        const events = ['mouseover', 'focus', 'click', 'mouseenter', 'mousemove'];
+                        document.querySelectorAll('*').forEach(el => {
+                            events.forEach(evt => {
+                                try { el.dispatchEvent(new Event(evt, {bubbles: true})); } catch(e) {}
+                            });
+                        });
+                    }""")
+                    await page.wait_for_timeout(1000)
+                except Exception:
+                    pass
+
+            monitor_status = await page.evaluate("""() => {
+                const hasURLParam = Boolean(
+                    document.querySelector('script:not([src])')?.textContent.match(/URLSearchParams|location\\.search|window\\.location/)
+                );
+                const hasInnerHTML = Boolean(
+                    document.querySelector('script:not([src])')?.textContent.match(/\\.innerHTML\\s*=/)
+                );
+                const isDOMXSS = hasURLParam && hasInnerHTML;
+                return {
+                    ...window._xssMonitor,
+                    isDOMXSS,
+                    hasURLParam,
+                    hasInnerHTML
                 };
+            }""")
 
-                // Monitor DOM modifications
-                const observer = new MutationObserver((mutations) => {
-                    if (!window._xssMonitor.initialLoad) {
-                        window._xssMonitor.domModification = true;
-                    }
-                });
-                
-                observer.observe(document, {
-                    childList: true,
-                    subtree: true,
-                    attributes: true,
-                    characterData: true
-                });
-
-                // After initial page load
-                setTimeout(() => {
-                    window._xssMonitor.initialLoad = false;
-                }, 100);
-
-                // Monitor alerts
-                window.alert = new Proxy(window.alert, {
-                    apply: function(target, thisArg, args) {
-                        window._xssMonitor.alertTriggered = true;
-                        window._xssMonitor.executionContext = 'alert';
-                        return target.apply(thisArg, args);
-                    }
-                });
-
-                // Monitor script execution
-                const originalEval = window.eval;
-                window.eval = function(code) {
-                    window._xssMonitor.scriptExecuted = true;
-                    window._xssMonitor.executionContext = 'eval';
-                    return originalEval.apply(this, arguments);
-                };
-
-                const originalFunction = window.Function;
-                window.Function = new Proxy(originalFunction, {
-                    construct: function(target, args) {
-                        window._xssMonitor.scriptExecuted = true;
-                        window._xssMonitor.executionContext = 'Function';
-                        return new target(...args);
-                    }
-                });
-
-                // Monitor events
-                const originalAddEventListener = EventTarget.prototype.addEventListener;
-                EventTarget.prototype.addEventListener = function(type, listener, options) {
-                    window._xssMonitor.eventTriggered = true;
-                    window._xssMonitor.executionContext = 'event-' + type;
-                    return originalAddEventListener.call(this, type, listener, options);
-                };
-
-                // Monitor inline event handlers
-                const eventAttributes = ['onclick', 'onload', 'onerror', 'onmouseover'];
-                eventAttributes.forEach(attr => {
-                    Object.defineProperty(Element.prototype, attr, {
-                        set: function(value) {
-                            window._xssMonitor.eventTriggered = true;
-                            window._xssMonitor.executionContext = 'inline-' + attr;
-                            this.setAttribute(attr, value);
-                        }
-                    });
-                });
-            """)
-
-            async def handle_dialog(dialog):
-                nonlocal alert_triggered, alert_text
-                alert_triggered = True
-                alert_text = dialog.message
-                await dialog.accept()
-
-            page.on("dialog", handle_dialog)
-            
-            try:
-                await page.goto(url, timeout=self.config.timeout * 1000, wait_until='networkidle')
-                await page.wait_for_timeout(self.config.alert_timeout * 1000)
-
-                monitor_status = await page.evaluate("""() => {
-                    // Check for DOM source patterns
-                    const hasURLParam = Boolean(
-                        document.querySelector('script:not([src])')?.textContent.match(/URLSearchParams|location\\.search|window\\.location/)
-                    );
-                    
-                    // Check for innerHTML assignments
-                    const hasInnerHTML = Boolean(
-                        document.querySelector('script:not([src])')?.textContent.match(/\\.innerHTML\\s*=/)
-                    );
-                    
-                    // Check if we have both URL parameter access and DOM modification
-                    const isDOMXSS = hasURLParam && hasInnerHTML;
-                    
-                    return {
-                        ...window._xssMonitor,
-                        isDOMXSS,
-                        hasURLParam,
-                        hasInnerHTML
-                    };
-                }""")
-
-                # Check for DOM-based XSS
+            if alert_triggered:
                 if monitor_status.get('isDOMXSS') or (potential_dom and monitor_status.get('domModification')):
                     xss_type = "dom"
-                    if not alert_triggered and monitor_status.get('scriptExecuted'):
-                        alert_triggered = True
-                        alert_text = "DOM XSS Detected via Dynamic Modification"
-                # Only check for Reflected XSS if we don't have DOM XSS indicators
-                elif alert_triggered and not monitor_status.get('isDOMXSS'):
+                else:
                     xss_type = "reflected"
-                
-                return alert_triggered, alert_text, xss_type
-            except Exception as e:
-                logging.error(f"Page navigation error: {str(e)}")
-                return False, None, "none"
+
+            return alert_triggered, alert_text, xss_type
         except Exception as e:
-            logging.error(f"Validation error: {str(e)}")
+            logging.error(f"Page navigation error: {str(e)}")
             return False, None, "none"
         finally:
             try:
                 page.remove_listener("dialog", handle_dialog)
             except Exception:
                 pass
+
+    async def _baseline_check(self, page: Page, clean_url: str) -> bool:
+        """
+        Visit the original URL (without payload) to check if it triggers
+        a dialog by itself. Returns True if the page has a pre-existing alert,
+        meaning the finding should be discarded as a false positive.
+        """
+        baseline_alert = False
+
+        async def handle_baseline_dialog(dialog):
+            nonlocal baseline_alert
+            baseline_alert = True
+            await dialog.accept()
+
+        page.on("dialog", handle_baseline_dialog)
+        try:
+            await page.goto(clean_url, timeout=self.config.timeout * 1000, wait_until='domcontentloaded')
+            await page.wait_for_timeout(2000)
+        except Exception:
+            pass
+        finally:
+            try:
+                page.remove_listener("dialog", handle_baseline_dialog)
+            except Exception:
+                pass
+
+        return baseline_alert
 
     async def record_vulnerability(self, domain: str, param: str, payload: str,
                                  url: str, alert_text: str, xss_type: str,
@@ -1656,7 +1571,7 @@ class XSSScanner:
 
             await self.send_telegram_notification(notification_message)
 
-            # Write results immediately to file
+            text_result = []
             try:
                 if self.config.json_output:
                     # For JSON output, handle the file differently since a valid JSON structure needed
@@ -1722,11 +1637,10 @@ class XSSScanner:
                 print(f"\n{Fore.RED}Error saving result: {str(e)}{Style.RESET_ALL}")
                 log_error(f"Error saving result: {str(e)}")
 
-        # Store in memory for final stats
-        if self.config.json_output:
-            self.json_results.append(result)
-        else:
-            self.results.extend(text_result)
+            if self.config.json_output:
+                self.json_results.append(result)
+            elif text_result:
+                self.results.extend(text_result)
 
     async def process_parameter_payloads(self, url: str, param: str, progress_bar: tqdm_asyncio) -> None:
         domain = url.split('/')[2]
@@ -1755,81 +1669,82 @@ class XSSScanner:
                     self.stats['payloads_tested'] += 1
 
                 try:
-                    async with self.http_session.get(test_url) as response:
-                        if response.status != 200:
-                            if progress_bar:
-                                progress_bar.update(1)
-                            continue
+                    response_text = await self._fetch_with_retry(test_url)
+                    if response_text is None:
+                        if progress_bar:
+                            progress_bar.update(1)
+                        continue
 
-                        response_text = await response.text()
+                    is_reflected_simple = (payload in response_text)
+                    is_reflected_advanced = await self._check_complex_reflection(response_text, payload)
+                    is_reflected = is_reflected_simple or is_reflected_advanced
 
-                        # Simple reflection check
-                        is_reflected_simple = (payload in response_text)
-                        # Complex reflection check
-                        is_reflected_advanced = await self._check_complex_reflection(response_text, payload)
-                        is_reflected = is_reflected_simple or is_reflected_advanced
+                    potential_dom = await self.dom_scanner.quick_dom_check(response_text)
 
-                        # DOM pattern check
-                        potential_dom = await self.dom_scanner.quick_dom_check(response_text)
+                    if not is_reflected and not potential_dom:
+                        async with self.stats_lock:
+                            self.stats['failed_payloads'] += 1
+                        if progress_bar:
+                            progress_bar.update(1)
+                        continue
 
-                        # Skip only if BOTH reflection and DOM checks fail
-                        if not is_reflected and not potential_dom:
-                            async with self.stats_lock:
-                                self.stats['failed_payloads'] += 1
-                            if progress_bar:
-                                progress_bar.update(1)
-                            continue
+                    context, page = await self.acquire_context()
+                    try:
+                        alert_triggered, alert_text, xss_type = await self.validate_alert(
+                            page,
+                            test_url,
+                            potential_dom=potential_dom
+                        )
 
-                        # Otherwise proceed with browser test
-                        context, page = await self.acquire_context()
-                        try:
-                            alert_triggered, alert_text, xss_type = await self.validate_alert(
-                                page,
-                                test_url,
-                                potential_dom=potential_dom
-                            )
-
-                            if alert_triggered:
-                                async with self.stats_lock:
-                                    self.stats['successful_payloads'] += 1
-
-                                payload_number = self.payload_index_map.get(payload, 0)
-                                type_label = "DOM Based" if xss_type == "dom" else "Reflected"
-                                domain_field = f"{domain:<25}"
-                                param_field = f"{param:<10}"
-                                type_field = f"{type_label:<10}"
-
-                                message = (
-                                    f"{Fore.GREEN}🎯 XSS Found!{Style.RESET_ALL}  "
-                                    f"Domain: {Fore.YELLOW}{domain_field}{Style.RESET_ALL}  |  "
-                                    f"Parameter: {Fore.YELLOW}{param_field}{Style.RESET_ALL}  |  "
-                                    f"Type: {Fore.YELLOW}{type_field}{Style.RESET_ALL}  |  "
-                                    f"Payload: {Fore.YELLOW}#{payload_number}{Style.RESET_ALL}"
-                                )
-                                if progress_bar:
-                                    progress_bar.write(message)
-
-                                await self.record_vulnerability(
-                                    domain=domain,
-                                    param=param,
-                                    payload=payload,
-                                    url=test_url,
-                                    alert_text=alert_text,
-                                    xss_type=type_label
-                                )
-
-                                remaining_payloads = len(self.payloads) - (self.payloads.index(payload) + 1)
-                                if progress_bar:
-                                    progress_bar.update(1 + remaining_payloads)
-                                break
-                            else:
+                        if alert_triggered:
+                            is_preexisting = await self._baseline_check(page, url)
+                            if is_preexisting:
                                 async with self.stats_lock:
                                     self.stats['failed_payloads'] += 1
                                 if progress_bar:
                                     progress_bar.update(1)
+                                continue
 
-                        finally:
-                            await self.release_context(context, page)
+                            async with self.stats_lock:
+                                self.stats['successful_payloads'] += 1
+
+                            payload_number = self.payload_index_map.get(payload, 0)
+                            type_label = "DOM Based" if xss_type == "dom" else "Reflected"
+                            domain_field = f"{domain:<25}"
+                            param_field = f"{param:<10}"
+                            type_field = f"{type_label:<10}"
+
+                            message = (
+                                f"{Fore.GREEN}🎯 XSS Found!{Style.RESET_ALL}  "
+                                f"Domain: {Fore.YELLOW}{domain_field}{Style.RESET_ALL}  |  "
+                                f"Parameter: {Fore.YELLOW}{param_field}{Style.RESET_ALL}  |  "
+                                f"Type: {Fore.YELLOW}{type_field}{Style.RESET_ALL}  |  "
+                                f"Payload: {Fore.YELLOW}#{payload_number}{Style.RESET_ALL}"
+                            )
+                            if progress_bar:
+                                progress_bar.write(message)
+
+                            await self.record_vulnerability(
+                                domain=domain,
+                                param=param,
+                                payload=payload,
+                                url=test_url,
+                                alert_text=alert_text,
+                                xss_type=type_label
+                            )
+
+                            remaining_payloads = len(self.payloads) - (self.payloads.index(payload) + 1)
+                            if progress_bar:
+                                progress_bar.update(1 + remaining_payloads)
+                            break
+                        else:
+                            async with self.stats_lock:
+                                self.stats['failed_payloads'] += 1
+                            if progress_bar:
+                                progress_bar.update(1)
+
+                    finally:
+                        await self.release_context(context, page)
 
                 except Exception as e:
                     async with self.stats_lock:
@@ -1905,7 +1820,6 @@ class XSSScanner:
 - Rate Limit: {Fore.GREEN}{self.config.rate_limit} req/s{Style.RESET_ALL}
 - Page Timeout: {Fore.GREEN}{self.config.timeout}s{Style.RESET_ALL}
 - Alert Timeout: {Fore.GREEN}{self.config.alert_timeout}s{Style.RESET_ALL}
-- Playwright Version: {Fore.GREEN}{self.config.playwright_version}{Style.RESET_ALL}
 - Payloads File: {Fore.GREEN}{self.config.payload_file}{Style.RESET_ALL}
 - Custom Headers: {Fore.GREEN}{'Yes' if self.config.custom_headers_present else 'Default'}{Style.RESET_ALL}
 - Output Format: {Fore.GREEN}{'JSON' if self.config.json_output else 'Text'}{Style.RESET_ALL}
@@ -1913,23 +1827,6 @@ class XSSScanner:
 
 """
         print(banner)
-
-    async def check_reflection(self, url: str, payload: str) -> bool:
-        try:
-            async with self.http_session.get(url) as response:
-                if response.status != 200:
-                    return False
-                content = await response.text()
-                if payload in content:
-                    return True
-                if await self._check_complex_reflection(content, payload):
-                    return True
-                return False
-        except Exception as e:
-            async with self.stats_lock:
-                self.stats['errors'] += 1
-                self.error_types[type(e).__name__] = self.error_types.get(type(e).__name__, 0) + 1
-            return False
 
     async def run(self) -> None:
         self.banner()
@@ -1998,7 +1895,7 @@ class XSSScanner:
                         self.progress_bar.update(remaining)
                     self.progress_bar.refresh()
                     self.progress_bar.close()
-                except:
+                except (AttributeError, ValueError, TypeError):
                     pass
                 self.progress_bar = None
 
@@ -2027,14 +1924,20 @@ class XSSScanner:
             if hasattr(self, 'browser') and self.browser:
                 try:
                     await asyncio.wait_for(self.browser.close(), timeout=2.0)
-                except:
+                except Exception:
+                    pass
+
+            if hasattr(self, '_playwright') and self._playwright:
+                try:
+                    await self._playwright.stop()
+                except Exception:
                     pass
 
             if hasattr(self, 'http_session') and self.http_session and not self.http_session.closed:
                 try:
                     await asyncio.wait_for(self.http_session.close(), timeout=1.0)
                     await asyncio.sleep(0.1)
-                except:
+                except (asyncio.TimeoutError, OSError, Exception):
                     pass
 
             if not self.interrupted:
@@ -2046,23 +1949,13 @@ class XSSScanner:
                 self.context_pool = None
             if hasattr(self, 'browser'):
                 self.browser = None
+            if hasattr(self, '_playwright'):
+                self._playwright = None
             if hasattr(self, 'http_session'):
                 self.http_session = None
             warnings.filterwarnings("ignore",
                                   category=ResourceWarning,
                                   message="unclosed.*<aiohttp.client.ClientSession.*>")
-
-    async def save_results(self) -> None:
-        try:
-            if self.config.json_output:
-                async with aiofiles.open(self.config.output_file, 'w') as f:
-                    await f.write(json.dumps(self.json_results, indent=2))
-            else:
-                async with aiofiles.open(self.config.output_file, 'w') as f:
-                    await f.write('\n'.join(self.results))
-        except Exception as e:
-            print(f"\n{Fore.RED}Error saving results: {str(e)}{Style.RESET_ALL}")
-            log_error(f"Error saving results: {str(e)}")
 
     def print_final_stats(self) -> None:
         if self.start_time:
@@ -2186,7 +2079,6 @@ class XSSScanner:
 async def async_main() -> None:
     scanner = None
     try:
-        playwright_version = check_playwright_version()
         args = parse_arguments()
         if args.update:
             git_handler = GitHandler()
@@ -2211,7 +2103,7 @@ async def async_main() -> None:
             else:
                 print(f"{Fore.GREEN}Already running the latest version.{Style.RESET_ALL}")
                 return
-        config = Config(args, playwright_version)
+        config = Config(args)
         setup_logging(config)
         scanner = XSSScanner(config)
         await scanner.run()
@@ -2350,7 +2242,7 @@ def main() -> None:
                 loop.stop()
             if not loop.is_closed():
                 loop.close()
-        except:
+        except (RuntimeError, OSError):
             pass
         cleanup_stderr()
 
