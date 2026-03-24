@@ -35,7 +35,7 @@
 
 **2. Install Playwright and the Chromium browser:**
 
-Kali Linux includes most Python dependencies by default. However, you must install the Playwright Chromium browser binary. **Always use `python -m playwright`** — do NOT install `node-playwright` via apt, as that is a different Node.js package and will cause conflicts.
+Kali Linux includes most Python dependencies by default. However, you must install the Playwright Chromium browser binary. **Always use `python -m playwright`** do NOT install `node-playwright` via apt, as that is a different Node.js package and will cause conflicts.
 
    ```bash
    pip install --break-system-packages playwright
